@@ -2,11 +2,9 @@
 
 A three-line status line for [Claude Code](https://docs.anthropic.com/en/docs/claude-code): model and context depth, rate-limit windows that stay correct across sessions, and per-repo git state including linked worktrees.
 
-```
-Fable 5 · 237k/763k · medium/opus · 5h 29% ↻23:10 (1h13m) · 7d 63% ↻Mon 09:00
-myapp(main) 2✱ ↑2 · +1 branch · 3 merged
-⎇ demo +4 2✱, alpha —, +2
-```
+![status line rendered over three layouts: a single repo, a session inside one of its worktrees, and a multi-repo workspace](docs/statusline.svg)
+
+Real output of the script over synthetic fixtures — regenerate with `sh docs/render-demo.sh | python3 docs/ansi2svg.py > docs/statusline.svg`.
 
 ## What each line shows
 
