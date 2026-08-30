@@ -4,7 +4,7 @@ A three-line status line for [Claude Code](https://docs.anthropic.com/en/docs/cl
 
 ```
 Fable 5 · 237k/763k · medium/opus · 5h 29% ↻23:10 (1h13m) · 7d 63% ↻Mon 09:00
-aidex(main) 2✱ ↑2 · +1 branch · 3 merged
+myapp(main) 2✱ ↑2 · +1 branch · 3 merged
 ⎇ demo +4 2✱, alpha —, +2
 ```
 
@@ -16,9 +16,21 @@ aidex(main) 2✱ ↑2 · +1 branch · 3 merged
 - Depth is read from the transcript as the **max over a turn's iterations**, not the top-level sum Claude Code reports: a multi-iteration turn inflates `total_input_tokens` ~2x, enough to jump two colour bands.
 - Rate limits show the 5-hour and 7-day windows with reset time. Both slots always render; `5h —` means "no live data for this window", never a stale figure.
 
-**Line 2 — git.** One entry per repo: `name(branch)`, then only the counters that are non-zero — `N✱` uncommitted files, `↑N`/`↓N` against upstream, `+N branches` unmerged into trunk, `N merged` branches safe to delete (trunk and anything checked out in a worktree are excluded). Detects a `*_ws` workspace ancestor (monorepo or multi-repo) or the cwd itself; a linked worktree as cwd works too.
+**Line 2 — git.** One entry per repo: `name(branch)`, then only the counters that are non-zero — `N✱` uncommitted files, `↑N`/`↓N` against upstream, `+N branches` unmerged into trunk, `N merged` branches safe to delete (trunk and anything checked out in a worktree are excluded).
 
-**Line 3 — worktrees.** Sibling `<workspace>-wt-<slug>` directories, each with commits ahead of trunk and dirty files summed across its sub-repos. The worktree you are in is pinned first; past three names the rest collapse to `+N`; a worktree with neither commits nor changes shows `—` (finished or abandoned).
+**Line 3 — worktrees.** Each linked worktree of the repo with its commits ahead of trunk and dirty files. The worktree you are in is pinned first; past three names the rest collapse to `+N`; a worktree with neither commits nor changes shows `—` (finished or abandoned). Omitted when there are none.
+
+## Layouts
+
+Nothing to configure — the script reads the session's working directory and picks the layout:
+
+| Working directory | Line 2 | Line 3 |
+|---|---|---|
+| Anywhere inside a git repo (its root, a subdirectory, a linked worktree) | that repo | `git worktree list` of it, minus the main checkout — plain `git worktree add` and Claude Code's `.claude/worktrees/<name>` alike |
+| A folder that is not a repo but holds repos | one entry per immediate child repo | — |
+| Inside a `<name>_ws` folder (optional convention, see below) | the workspace repo and/or every child repo | sibling `<name>_ws-wt-<slug>` folders |
+
+The `_ws` convention is for multi-repo workspaces: a folder `shop_ws/` holding `backend/` and `frontend/` as independent repos. A worktree there is a *sibling* folder `shop_ws-wt-<slug>/` with the same sub-repos, counted as one unit — its commits and changes are summed across sub-repos, and the roster is derived from folder names at zero git cost. If you do not name folders that way, the convention never triggers.
 
 ## Rate limits across sessions
 
@@ -28,7 +40,7 @@ The script keeps one account-wide cache (`~/.claude/rate-limits-cache.json`) and
 
 ## Install
 
-Requires `jq` and `git`. macOS or Linux.
+Requires `jq` and `git` (POSIX `sh`; macOS or Linux).
 
 ```bash
 git clone https://github.com/yacb2/claude-statusline.git

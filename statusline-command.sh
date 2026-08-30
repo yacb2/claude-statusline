@@ -4,7 +4,7 @@ input=$(cat)
 # Hard dependency: jq. Surface a single-line diagnostic instead of silently
 # rendering a half-empty status line.
 if ! command -v jq >/dev/null 2>&1; then
-  printf 'statusline: jq not found (install with: brew install jq)\n'
+  printf 'statusline: jq not found (brew install jq / apt install jq)\n'
   exit 0
 fi
 
@@ -36,7 +36,7 @@ pct_color() {
 # 40% and colours green, while measurement over 674 Opus 5 sessions puts 88% of
 # all input spend above 150k and turns at 400k running 1.55x slower than the same
 # session's own sub-100k baseline. Overflow is not the binding constraint; depth
-# is. Bands (see .context/research/2026-08-13-session-token-threshold-handoff.md):
+# is. Bands:
 #   <200k  green   nothing to do
 #   200k   yellow  start looking for an exit
 #   250k   orange  hand off at the next boundary — end of phase, after a commit
@@ -251,6 +251,8 @@ fi
 # and shows compact change/ahead counters per repo. Skips repos with no activity.
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 git_display=""
+ws_root=""
+repo_top=""
 # Marker for deletable branches. Intentionally EMPTY: the first version used
 # ✂ (U+2702), which carries emoji presentation and is rendered double-width by
 # most terminals while the status line accounts for one cell — so the glyph
@@ -342,7 +344,6 @@ iterate_subrepos() {
 }
 
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
-  ws_root=""
   search="$cwd"
   # Walk to the OUTERMOST *_ws ancestor (don't break), so a nested scratch_ws
   # inside lore_ws still resolves to lore_ws.
@@ -361,52 +362,64 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     [ -e "$ws_root/.git" ] && render_repo "$(basename "$ws_root")" "$ws_root"
     # Multi-repo: independent git repos live in immediate subdirs.
     iterate_subrepos "$ws_root"
-  elif [ -e "$cwd/.git" ]; then
-    # -e, not -d: cwd may itself be a linked worktree, whose .git is a FILE.
-    render_repo "$(basename "$cwd")" "$cwd"
   else
-    # Flat layout: cwd is a parent containing one or more */.git children.
-    iterate_subrepos "$cwd"
+    # No workspace convention: whatever repo encloses cwd — its root, a
+    # subdirectory of it, or a linked worktree (whose .git is a FILE) all
+    # resolve the same way. Only when cwd is in no repo at all is it read as a
+    # flat parent holding one or more */.git children.
+    repo_top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+    if [ -n "$repo_top" ]; then
+      render_repo "$(basename "$repo_top")" "$repo_top"
+    else
+      iterate_subrepos "$cwd"
+    fi
   fi
 fi
 
 # --- Worktrees ---
-# The unit is one *logical* worktree = one sibling dir "<base_ws>-wt-<slug>",
-# which may span several repos. Counting `git worktree list` entries instead
-# would double-count: a worktree touching backend+frontend appears once per repo
-# (here: 2 entries in backend + 3 in frontend = 5, for 2 actual worktrees).
-# Deriving from directory names costs zero git subprocesses.
+# The roster is one path per line, from whichever source applies:
+#   - workspace convention: sibling dirs "<base_ws>-wt-<slug>". One *logical*
+#     worktree may span several repos (backend+frontend), so it is counted once
+#     by directory, never per `git worktree list` entry — and derived from
+#     names, at zero git subprocesses.
+#   - any other repo: `git worktree list` of the rendered repo minus its main
+#     checkout (always the first entry). Covers plain `git worktree add` and
+#     Claude Code's own .claude/worktrees/<name>.
+# The displayed name is the directory's basename with any "<ws>-wt-" prefix
+# stripped; the entry equal to the tree this session sits in is pinned first.
 WT_GLYPH="⎇"
 WT_MAX=3   # names shown before collapsing the remainder into "+N"
 wt_display=""
+wt_paths=""
+wt_cur=""
 if [ -n "$ws_root" ]; then
   ws_base=$(basename "$ws_root")
   ws_parent=$(dirname "$ws_root")
-  # cur_slug is non-empty only when this session is itself inside a worktree.
-  case "$ws_base" in
-    *_ws-wt-*) cur_slug=${ws_base#*-wt-}; base_ws=${ws_base%%-wt-*} ;;
-    *) cur_slug=""; base_ws=$ws_base ;;
-  esac
-
-  # Slugs are branch-derived (no spaces), so word-splitting the list is safe.
-  wt_all=""
-  wt_n=0
+  base_ws=${ws_base%%-wt-*}
+  case "$ws_base" in *-wt-*) wt_cur=$ws_root ;; esac
   for wt_dir in "$ws_parent/$base_ws"-wt-*/; do
     [ -d "$wt_dir" ] || continue
-    slug=$(basename "$wt_dir"); slug=${slug#*-wt-}
-    wt_n=$((wt_n + 1))
-    wt_all="$wt_all $slug"
+    wt_paths="$wt_paths${wt_dir%/}
+"
   done
+elif [ -n "$repo_top" ]; then
+  wt_paths=$(git -C "$repo_top" worktree list --porcelain 2>/dev/null \
+    | sed -n 's#^worktree ##p' | sed '1d')
+  wt_cur=$repo_top   # matches an entry only when cwd is inside a linked worktree
+fi
 
-  # Commits + dirty files a worktree holds, summed across its sub-repos.
-  # A worktree spanning backend+frontend is ONE unit, so its commits are the
-  # sum, not a per-repo list. Measured 2026-08-01: 6 git calls over 3 worktrees
-  # cost 57ms, against a 60s refresh — affordable, but only computed for the
-  # slugs actually rendered (WT_MAX), never for the ones collapsed into "+N".
+if [ -n "$wt_paths" ]; then
+  # Commits + dirty files a worktree holds. The argument is either a repo
+  # itself or a wrapper dir whose immediate subdirs are repos; a worktree
+  # spanning backend+frontend is ONE unit, so its commits are the sum.
+  # Measured 2026-08-01: 6 git calls over 3 worktrees cost 57ms, against a 60s
+  # refresh — affordable, but only computed for the entries actually rendered
+  # (WT_MAX), never for the ones collapsed into "+N".
   wt_stats() {
     wt_ahead=0
     wt_dirty=0
-    for _s in "$ws_parent/$base_ws-wt-$1"/*/; do
+    if [ -e "$1/.git" ]; then set -- "$1"; else set -- "$1"/*/; fi
+    for _s in "$@"; do
       [ -e "$_s/.git" ] || continue
       _t=main
       git -C "$_s" rev-parse --verify --quiet main >/dev/null 2>&1 || _t=master
@@ -418,36 +431,43 @@ if [ -n "$ws_root" ]; then
       wt_dirty=$((wt_dirty + _c))
     done
   }
-  # Render "<slug> +N✱" — and a DIM em-dash when a worktree holds neither
+  # Render "<name> +N✱" — and a DIM em-dash when a worktree holds neither
   # commits nor changes, which is the signal that it is finished or abandoned.
   wt_entry() {
     wt_stats "$1"
-    _col=$2
-    _out="${_col}$1${RESET}"
+    _name=$(basename "$1"); _name=${_name#*-wt-}
+    _out="$2${_name}${RESET}"
     [ "$wt_ahead" -gt 0 ] && _out="${_out} ${CYAN}+${wt_ahead}${RESET}"
     [ "$wt_dirty" -gt 0 ] && _out="${_out} ${YELLOW}${wt_dirty}✱${RESET}"
     [ "$wt_ahead" -eq 0 ] && [ "$wt_dirty" -eq 0 ] && _out="${_out} ${DIM}—${RESET}"
     printf '%s' "$_out"
   }
 
-  if [ "$wt_n" -gt 0 ]; then
-    wt_shown=0
-    # If this session sits inside a worktree, pin its slug first (bold+magenta)
-    # and never let WT_MAX truncate it — "which one am I in" is the whole point.
-    if [ -n "$cur_slug" ]; then
-      wt_display="$(wt_entry "$cur_slug" "${BOLD}${MAGENTA}")"
+  # Paths may hold spaces; split on newlines only.
+  _ifs=$IFS
+  IFS='
+'
+  wt_n=0
+  wt_shown=0
+  # If this session sits inside a worktree, pin it first (bold+magenta) and
+  # never let WT_MAX truncate it — "which one am I in" is the whole point.
+  for p in $wt_paths; do
+    wt_n=$((wt_n + 1))
+    if [ "$p" = "$wt_cur" ]; then
+      wt_display="$(wt_entry "$p" "${BOLD}${MAGENTA}")"
       wt_shown=1
     fi
-    for slug in $wt_all; do
-      [ "$slug" = "$cur_slug" ] && continue
-      [ "$wt_shown" -ge "$WT_MAX" ] && break
-      wt_shown=$((wt_shown + 1))
-      [ -n "$wt_display" ] && wt_display="${wt_display}${DIM}, ${RESET}"
-      wt_display="${wt_display}$(wt_entry "$slug" "${GRAY}")"
-    done
-    [ "$wt_n" -gt "$wt_shown" ] && wt_display="${wt_display}${DIM}, +$((wt_n - wt_shown))${RESET}"
-    wt_display="${MAGENTA}${WT_GLYPH}${RESET} ${wt_display}"
-  fi
+  done
+  for p in $wt_paths; do
+    [ "$p" = "$wt_cur" ] && continue
+    [ "$wt_shown" -ge "$WT_MAX" ] && break
+    wt_shown=$((wt_shown + 1))
+    [ -n "$wt_display" ] && wt_display="${wt_display}${DIM}, ${RESET}"
+    wt_display="${wt_display}$(wt_entry "$p" "${GRAY}")"
+  done
+  IFS=$_ifs
+  [ "$wt_n" -gt "$wt_shown" ] && wt_display="${wt_display}${DIM}, +$((wt_n - wt_shown))${RESET}"
+  wt_display="${MAGENTA}${WT_GLYPH}${RESET} ${wt_display}"
 fi
 
 # --- Render ---

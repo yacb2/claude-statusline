@@ -19,6 +19,11 @@
 #   5. A plain repo worktree as cwd (no *_ws naming, .git is a FILE) still
 #      renders line 2. Bug: the top-level branch tested `[ -d "$cwd/.git" ]`
 #      and fell through to the sub-repo scan, which found nothing.
+#   6. No *_ws convention at all: a cwd anywhere INSIDE a repo renders that
+#      repo, and the repo's linked worktrees (plain `git worktree add`, which
+#      is also what Claude Code does under .claude/worktrees/) fill line 3.
+#      Bug: only `$cwd/.git` was probed, so a session opened in `repo/src`
+#      showed no git line, and line 3 only ever read `<name>_ws-wt-*` siblings.
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT="$HERE/../statusline-command.sh"
@@ -63,6 +68,8 @@ mkdir -p "$FIX/plain"
 $GIT init -q "$FIX/plain"
 $GIT -C "$FIX/plain" commit -q --allow-empty -m init
 $GIT -C "$FIX/plain" worktree add -q -b feat/x "$FIX/plain-x" >/dev/null 2>&1
+$GIT -C "$FIX/plain-x" commit -q --allow-empty -m one-ahead
+mkdir -p "$FIX/plain/src"
 
 # C. A workspace with no worktree siblings.
 mkdir -p "$FIX/lonely_ws/backend"
@@ -130,6 +137,17 @@ fi
 # ------------------------------ 5. plain worktree as cwd renders its repo line
 want "plain worktree cwd renders its repo"   "$(line 2 "$FIX/plain-x")" "plain-x"
 want "plain worktree cwd shows its branch"   "$(line 2 "$FIX/plain-x")" "feat/x"
+
+# ------------------------ 6. no convention: nested cwd + git-native worktrees
+want "nested cwd renders the enclosing repo"  "$(line 2 "$FIX/plain/src")" "plain(main)"
+want "main checkout lists git worktrees"      "$(line 3 "$FIX/plain")"     "plain-x"
+want "git worktree shows commits ahead"       "$(line 3 "$FIX/plain")"     "plain-x +1"
+raw=$(run "$FIX/plain-x" | sed -n '3p')
+if printf '%s' "$raw" | grep -q "$(printf '\033')\[1m$(printf '\033')\[35mplain-x"; then
+  ok "active git worktree is bold+magenta"
+else
+  bad "active git worktree is bold+magenta" "raw: [$raw]"
+fi
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

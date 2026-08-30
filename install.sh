@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 DEST="$HOME/.claude/statusline-command.sh"
 SETTINGS="$HOME/.claude/settings.json"
 
-command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq)"; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq / apt install jq)"; exit 1; }
 
 mkdir -p "$HOME/.claude"
 cp "$HERE/statusline-command.sh" "$DEST"
