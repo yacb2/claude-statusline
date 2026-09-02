@@ -62,11 +62,14 @@ depth_color() {
   esac
 }
 
-# --- Model ---
-# Strip leading "Claude " and trailing " (NM context)" suffix for compactness.
-# "Claude Opus 4.7 (1M context)" -> "Opus 4.7"
-model=$(echo "$input" | jq -r '.model.display_name // "Claude"' \
-  | sed -E 's/^Claude //; s/ \([0-9]+[MmKk] context\)$//')
+# --- Input fields ---
+# One jq over the payload emitting shell assignments (@sh quotes every value),
+# not one jq per field: measured 41 ms for nine calls against 6 ms for this one,
+# on a render Claude Code may request every 300 ms. The model name drops the
+# "Claude " prefix and any " (NM context)" suffix: "Claude Opus 4.7 (1M context)"
+# -> "Opus 4.7". Defaults first, so malformed stdin degrades to placeholders.
+model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
+eval "$(echo "$input" | jq -r '@sh "model=\((.model.display_name // "Claude") | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "") total_input=\(.context_window.total_input_tokens // "") ctx_size=\(.context_window.context_window_size // "") effort=\(.effort.level // "") cwd=\(.workspace.current_dir // "") rate_limits=\(.rate_limits // {} | tojson)"' 2>/dev/null)"
 
 # --- Context window ---
 # Depth is the transcript-derived count when the transcript is readable, else
@@ -92,7 +95,6 @@ model=$(echo "$input" | jq -r '.model.display_name // "Claude"' \
 # stamped a stale snapshot as fresh. Lines are parsed one by one (fromjson?) so a
 # last line still being written cannot discard the whole window.
 now=$(date +%s)
-transcript_p=$(echo "$input" | jq -r '.transcript_path // empty')
 depth_tok=""
 taken_at=""
 if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
@@ -118,8 +120,6 @@ fi
 # still came from an API response just now, so it is dated now — not 0, which
 # made every new session lose to whatever the cache held.
 [ -n "$taken_at" ] || taken_at=$now
-total_input=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
-ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 used_tokens=${depth_tok:-$total_input}
 
 if [ -n "$used_tokens" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ]; then
@@ -138,15 +138,11 @@ fi
 # --- Settings: effort + advisor ---
 # Effort now ships live in the status input (.effort.level); prefer it over the
 # possibly-stale settings.json value. Advisor model still comes from settings.json.
-effort=$(echo "$input" | jq -r '.effort.level // empty')
 settings_file="$HOME/.claude/settings.json"
-if [ -f "$settings_file" ]; then
-  [ -z "$effort" ] && effort=$(jq -r '.effortLevel // "—"' "$settings_file")
-  advisor=$(jq -r '.advisorModel // "—"' "$settings_file")
-else
-  [ -z "$effort" ] && effort="—"
-  advisor="—"
-fi
+effort_cfg="—"; advisor="—"
+[ -f "$settings_file" ] \
+  && eval "$(jq -r '@sh "effort_cfg=\(.effortLevel // "—") advisor=\(.advisorModel // "—")"' "$settings_file" 2>/dev/null)"
+[ -n "$effort" ] || effort=$effort_cfg
 
 # --- Rate limits ---
 # Epoch → formatted time; BSD date (macOS) first, GNU fallback.
@@ -188,13 +184,14 @@ fmt_left() {
 #     later taken_at once beat the live one and emptied the slot ("5h —" while
 #     the session held data), flapping as sessions alternated renders.
 rl_cache="$HOME/.claude/rate-limits-cache.json"
-mine=$(echo "$input" | jq -c --argjson t "$taken_at" \
-  '.rate_limits // {} | map_values(. + {taken_at: $t})' 2>/dev/null)
-[ -n "$mine" ] || mine="{}"
 cached="{}"
 [ -f "$rl_cache" ] && cached=$(jq -c '.rate_limits // {}' "$rl_cache" 2>/dev/null)
 [ -n "$cached" ] || cached="{}"
-merged=$(jq -c -n --argjson a "$cached" --argjson b "$mine" --argjson now "$now" '
+# One jq merges and emits the merged JSON plus the four rendered scalars as
+# shell assignments. If it fails, merged stays as cached (nothing written) and
+# the slots render as placeholders.
+merged=$cached; five=""; five_reset=""; week=""; week_reset=""
+eval "$(jq -r -n --argjson a "$cached" --argjson b "$rate_limits" --argjson t "$taken_at" --argjson now "$now" '
   def pick(x; y):
     if x == null then y elif y == null then x
     elif y.resets_at == x.resets_at then
@@ -203,19 +200,17 @@ merged=$(jq -c -n --argjson a "$cached" --argjson b "$mine" --argjson now "$now"
     elif (y.taken_at // 0) < (x.taken_at // 0) then x
     elif y.resets_at > x.resets_at then y else x end;
   def live(w): if w == null or (w.resets_at // 0) <= $now then null else w end;
-  { five_hour: pick(live($a.five_hour); live($b.five_hour)),
-    seven_day: pick(live($a.seven_day); live($b.seven_day)) }
+  ($b | map_values(. + {taken_at: $t})) as $b
+  | { five_hour: pick(live($a.five_hour); live($b.five_hour)),
+      seven_day: pick(live($a.seven_day); live($b.seven_day)) }
   | with_entries(select(.value != null))
-' 2>/dev/null)
+  | @sh "merged=\(tojson) five=\(.five_hour.used_percentage // "") five_reset=\(.five_hour.resets_at // "") week=\(.seven_day.used_percentage // "") week_reset=\(.seven_day.resets_at // "")"
+' 2>/dev/null)"
 if [ "$merged" != "$cached" ]; then
   # Atomic write: several sessions render concurrently.
   printf '{"rate_limits":%s}\n' "$merged" > "$rl_cache.tmp.$$" \
     && mv -f "$rl_cache.tmp.$$" "$rl_cache"
 fi
-five=$(echo "$merged" | jq -r '.five_hour.used_percentage // empty' 2>/dev/null)
-five_reset=$(echo "$merged" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
-week=$(echo "$merged" | jq -r '.seven_day.used_percentage // empty' 2>/dev/null)
-week_reset=$(echo "$merged" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
 # Both slots always render, so the line keeps one shape: "5h —" says "no live
 # data for this window", which is a different fact from a window that is missing.
 if [ -n "$five" ]; then
@@ -239,7 +234,6 @@ fi
 # --- Git: per-repo changes in workspace ---
 # Detects sub-repos under the workspace root (cwd or nearest *_ws ancestor)
 # and shows compact change/ahead counters per repo. Skips repos with no activity.
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // ""')
 git_display=""
 ws_root=""
 repo_top=""
@@ -264,10 +258,17 @@ render_repo() {
   repo=$2
   # -e, not -d: in a git worktree .git is a FILE (a gitdir: pointer), not a dir.
   [ -e "$repo/.git" ] || return
-  branch=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-  changes=$(git -C "$repo" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  ahead=$(git -C "$repo" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-  behind=$(git -C "$repo" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+  # One `status --porcelain=v2 --branch` carries the branch, ahead/behind (only
+  # when an upstream exists) and one line per change: measured 13 ms against
+  # 33 ms for symbolic-ref + status|wc|tr + two rev-list per repo.
+  set -- $(git -C "$repo" status --porcelain=v2 --branch 2>/dev/null | awk '
+    /^# branch\.head / { b = $3 }
+    /^# branch\.ab /   { a = substr($3, 2); d = substr($4, 2) }
+    !/^#/              { c++ }
+    END { print (b == "" || b == "(detached)" ? "detached" : b), a + 0, d + 0, c + 0 }')
+  branch=${1:-detached}; ahead=${2:-0}; behind=${3:-0}; changes=${4:-0}
+  # Read once here; the worktree roster below reuses it for the rendered repo.
+  wt_list=$(git -C "$repo" worktree list --porcelain 2>/dev/null)
 
   # Two branch counts against trunk (main, else master), and they answer
   # different questions:
@@ -295,8 +296,7 @@ render_repo() {
     # names, so space is a safe delimiter. Caught 2026-08-01 — the failure was
     # silent, awk errored and the count fell back to 0, i.e. it under-reported
     # in exactly the case the exclusion exists for.
-    wt_branches=$(git -C "$repo" worktree list --porcelain 2>/dev/null \
-      | sed -n 's#^branch refs/heads/##p' | tr '\n' ' ')
+    wt_branches=$(printf '%s\n' "$wt_list" | sed -n 's#^branch refs/heads/##p' | tr '\n' ' ')
     merged=$(git -C "$repo" for-each-ref \
       --merged="refs/heads/$trunk" \
       --format='%(refname:short)' refs/heads/ 2>/dev/null \
@@ -331,7 +331,7 @@ iterate_subrepos() {
     [ -d "$sub_path" ] || continue
     count=$((count + 1))
     [ "$count" -gt 50 ] && break
-    sub=$(basename "$sub_path")
+    sub=${sub_path%/}; sub=${sub##*/}
     render_repo "$sub" "$root/$sub"
   done
 }
@@ -340,19 +340,19 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   search="$cwd"
   # Walk to the OUTERMOST *_ws ancestor (don't break), so a nested scratch_ws
   # inside lore_ws still resolves to lore_ws.
+  # Parameter expansion, not basename/dirname: 12-14 forks per render for a
+  # path of ordinary depth, measured 20 ms against under 1 ms.
   while [ "$search" != "/" ] && [ "$search" != "" ]; do
-    case "$(basename "$search")" in
+    case "${search##*/}" in
       # *_ws-wt-<slug> is the worktree wrapper sibling of a *_ws workspace.
       *_ws|*_ws-wt-*) ws_root="$search" ;;
     esac
-    parent=$(dirname "$search")
-    [ "$parent" = "$search" ] && break
-    search="$parent"
+    search=${search%/*}
   done
 
   if [ -n "$ws_root" ]; then
     # Monorepo: workspace root is itself a git repo (.git at root, plain subdirs).
-    [ -e "$ws_root/.git" ] && render_repo "$(basename "$ws_root")" "$ws_root"
+    [ -e "$ws_root/.git" ] && render_repo "${ws_root##*/}" "$ws_root"
     # Multi-repo: independent git repos live in immediate subdirs.
     iterate_subrepos "$ws_root"
   else
@@ -362,7 +362,7 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
     # flat parent holding one or more */.git children.
     repo_top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
     if [ -n "$repo_top" ]; then
-      render_repo "$(basename "$repo_top")" "$repo_top"
+      render_repo "${repo_top##*/}" "$repo_top"
     else
       iterate_subrepos "$cwd"
     fi
@@ -386,8 +386,8 @@ wt_display=""
 wt_paths=""
 wt_cur=""
 if [ -n "$ws_root" ]; then
-  ws_base=$(basename "$ws_root")
-  ws_parent=$(dirname "$ws_root")
+  ws_base=${ws_root##*/}
+  ws_parent=${ws_root%/*}
   base_ws=${ws_base%%-wt-*}
   case "$ws_base" in *-wt-*) wt_cur=$ws_root ;; esac
   for wt_dir in "$ws_parent/$base_ws"-wt-*/; do
@@ -399,7 +399,7 @@ elif [ -n "$repo_top" ]; then
   # One paragraph per worktree; the first is the main checkout. A worktree whose
   # directory was deleted stays listed as "prunable" until `git worktree prune`
   # and would otherwise render as "<name> —", i.e. finished — skip it.
-  wt_paths=$(git -C "$repo_top" worktree list --porcelain 2>/dev/null \
+  wt_paths=$(printf '%s\n' "$wt_list" \
     | awk 'BEGIN { RS = "" } NR > 1 {
         n = split($0, l, "\n"); keep = 1
         for (i = 2; i <= n; i++) if (l[i] ~ /^prunable/) keep = 0
@@ -424,7 +424,7 @@ if [ -n "$wt_paths" ]; then
       _a=0
       [ -n "$_t" ] && _a=$(git -C "$_s" rev-list --count "$_t..HEAD" 2>/dev/null)
       case "$_a" in ''|*[!0-9]*) _a=0 ;; esac
-      _c=$(git -C "$_s" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      _c=$(git -C "$_s" status --porcelain 2>/dev/null | awk 'END { print NR }')
       case "$_c" in ''|*[!0-9]*) _c=0 ;; esac
       wt_ahead=$((wt_ahead + _a))
       wt_dirty=$((wt_dirty + _c))
@@ -434,7 +434,7 @@ if [ -n "$wt_paths" ]; then
   # commits nor changes, which is the signal that it is finished or abandoned.
   wt_entry() {
     wt_stats "$1"
-    _name=$(basename "$1"); _name=${_name#*-wt-}
+    _name=${1##*/}; _name=${_name#*-wt-}
     _out="$2${_name}${RESET}"
     [ "$wt_ahead" -gt 0 ] && _out="${_out} ${CYAN}+${wt_ahead}${RESET}"
     [ "$wt_dirty" -gt 0 ] && _out="${_out} ${YELLOW}${wt_dirty}✱${RESET}"
