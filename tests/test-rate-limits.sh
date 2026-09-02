@@ -54,9 +54,10 @@ in_5d=$((now + 432000))
 ago_1h=$((now - 3600))
 
 # Render line 1, colours stripped. $1 = rate_limits JSON ("" = field absent).
+# $2 = extra top-level JSON members (optional), e.g. a context_window.
 run() {
   if [ -n "$1" ]; then rl=",\"rate_limits\":$1"; else rl=""; fi
-  printf '{"model":{"display_name":"Claude Opus 4.8","id":"claude-opus-4-8[1m]"},"workspace":{"current_dir":"%s"},"transcript_path":"%s","effort":{"level":"medium"}%s}' "$FIX" "$TRANSCRIPT" "$rl" \
+  printf '{"model":{"display_name":"Claude Opus 4.8","id":"claude-opus-4-8[1m]"},"workspace":{"current_dir":"%s"},"transcript_path":"%s","effort":{"level":"medium"}%s%s}' "$FIX" "$TRANSCRIPT" "$rl" "${2:+,$2}" \
     | HOME="$FIX" sh "$SCRIPT" | sed -n '1p' | sed 's/\x1b\[[0-9;]*m//g'
 }
 seed() { printf '%s\n' "$1" > "$CACHE"; }
@@ -107,15 +108,49 @@ want "no data -> 7d placeholder" "$out" "7d —"
 iso() { jq -n --argjson t "$1" '$t | todate'; }
 in_16h=$((now + 57600))
 seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d,\"taken_at\":$((now - 86400))}}}"
-printf '{"type":"assistant","timestamp":%s}\n' "$(iso "$now")" > "$TRANSCRIPT"
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":1000}}}\n' "$(iso "$now")" > "$TRANSCRIPT"
 out=$(run "{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h}}")
 want     "fresher snapshot wins over a later resets_at" "$out" "7d 1%"
 want_not "reset-away window is not rendered"           "$out" "7d 29%"
-printf '{"type":"assistant","timestamp":%s}\n' "$(iso "$((now - 172800))")" > "$TRANSCRIPT"
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":1000}}}\n' "$(iso "$((now - 172800))")" > "$TRANSCRIPT"
 out=$(run "{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d}}")
 want     "idle session cannot bring the old window back" "$out" "7d 1%"
 [ "$(cache_week)" = "1" ] && ok "cache keeps the fresher window" || bad "cache keeps the fresher window" "cache seven_day: $(cache_week)"
 : > "$TRANSCRIPT"
+
+# ------------------------------------ 7. an expired window never wins the tie-break
+# Liveness must be decided BEFORE the tie-break: an expired cached 5h with a later
+# taken_at beat the live one from the payload, and the slot rendered "5h —" while
+# the session held live data — then flapped as sessions alternated renders.
+seed "{\"rate_limits\":{\"five_hour\":{\"used_percentage\":90,\"resets_at\":$ago_1h,\"taken_at\":$((now - 100))}}}"
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":1000}}}\n' "$(iso "$((now - 200))")" > "$TRANSCRIPT"
+out=$(run "{\"five_hour\":{\"used_percentage\":3,\"resets_at\":$in_2h}}")
+want "live window beats an expired one with a later taken_at" "$out" "5h 3%"
+[ "$(cache_five)" = "3" ] && ok "cache holds the live window" || bad "cache holds the live window" "cache five_hour: $(cache_five)"
+
+# ------------------------------------ 8. API-error assistant entries are not responses
+# Claude Code appends {"type":"assistant","isApiErrorMessage":true} with an all-zero
+# usage on 529s/rate-limit errors (142 transcripts on this machine carry them). Both
+# transcript-derived values must skip them: depth otherwise reads 0k during the exact
+# minutes the user is being throttled, and taken_at stamps a stale snapshot as fresh.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h,\"taken_at\":$((now - 120))}}}"
+{
+  printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":2000,"cache_read_input_tokens":150000}}}\n' "$(iso "$((now - 172800))")"
+  printf '{"type":"assistant","timestamp":%s,"isApiErrorMessage":true,"message":{"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"iterations":null}}}\n' "$(iso "$now")"
+} > "$TRANSCRIPT"
+out=$(run "{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d}}" '"context_window":{"total_input_tokens":152000,"context_window_size":1000000}')
+want     "depth ignores the API-error entry"      "$out" "152k/848k"
+want_not "depth is not read as 0k"               "$out" "0k/"
+want     "taken_at ignores the API-error entry"  "$out" "7d 1%"
+: > "$TRANSCRIPT"
+
+# ------------------------------------ 9. a snapshot with no dated transcript is fresh
+# A brand-new session (no assistant entry yet) still holds a snapshot from its first
+# API response; dating it 0 made it lose to any cached window with a different
+# resets_at, which is the reset incident replayed on every new session.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d,\"taken_at\":$((now - 86400))}}}"
+out=$(run "{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h}}")
+want "undated live snapshot wins over an older cached window" "$out" "7d 1%"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

@@ -85,23 +85,43 @@ model=$(echo "$input" | jq -r '.model.display_name // "Claude"' \
 # coloured in the wrong band. The transcript carries the per-iteration breakdown, so
 # depth can be computed exactly rather than inferred from an inflated total.
 # Same rule as ~/.claude/hooks/context-depth-nudge.sh — the two must agree.
+#
+# One pass over the transcript tail yields two facts about the last REAL response:
+# its depth (above) and its timestamp, `taken_at`, which the rate-limit merge uses
+# to date this session's snapshot. "Real" excludes the assistant entries Claude Code
+# appends on API errors ({"isApiErrorMessage":true}, model "<synthetic>", all-zero
+# usage): 142 transcripts on this machine carry them, and taking them as responses
+# read the depth as 0k during the very minutes the user was being throttled, and
+# stamped a stale snapshot as fresh. Lines are parsed one by one (fromjson?) so a
+# last line still being written cannot discard the whole window.
+now=$(date +%s)
 model_id=$(echo "$input" | jq -r '.model.id // ""')
 transcript_p=$(echo "$input" | jq -r '.transcript_path // empty')
 depth_tok=""
+taken_at=""
 if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
-  depth_tok=$(tail -n 400 "$transcript_p" 2>/dev/null | jq -s -r '
-    [ .[] | select(.type == "assistant") | .message.usage | select(. != null) ] | last
-    | if . == null then empty
-      elif ((.iterations // []) | length) > 0 then
-        [ .iterations[]
-          | (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.input_tokens // 0)
-        ] | max
-      else
-        (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.input_tokens // 0)
-      end
+  set -- $(tail -n 400 "$transcript_p" 2>/dev/null | jq -Rs -r '
+    [ split("\n")[] | fromjson? | select(.type == "assistant")
+      | (.message.usage // null) as $u | select($u != null)
+      | { t: ((.timestamp // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0),
+          d: (if (($u.iterations // []) | length) > 0 then
+                [ $u.iterations[]
+                  | (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.input_tokens // 0)
+                ] | max
+              else
+                ($u.cache_read_input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.input_tokens // 0)
+              end) }
+      | select(.d > 0) ] | last
+    | if . == null then empty else "\(.d) \(.t)" end
   ' 2>/dev/null)
+  depth_tok=$1; taken_at=$2
   case "$depth_tok" in ''|*[!0-9]*) depth_tok="" ;; esac
+  case "$taken_at" in ''|*[!0-9]*) taken_at="" ;; esac
 fi
+# No dated response yet (new session, unreadable transcript): the snapshot in hand
+# still came from an API response just now, so it is dated now — not 0, which
+# made every new session lose to whatever the cache held.
+[ -n "$taken_at" ] || taken_at=$now
 total_input=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
 tokens_used=$(echo "$input" | jq -r '.context_window.tokens_used // empty')
@@ -183,7 +203,6 @@ fmt_left() {
   h=$((s / 3600)); m=$(((s % 3600) / 60))
   if [ "$h" -gt 0 ]; then printf '%dh%02dm' "$h" "$m"; else printf '%dm' "$m"; fi
 }
-now=$(date +%s)
 # Cross-session cache. Rate limits are account-wide, but Claude Code hands each
 # session ITS OWN snapshot, taken at that session's last API response — and, per
 # the docs ("Fields that may be absent"), each window may be independently absent
@@ -204,18 +223,14 @@ now=$(date +%s)
 #     which is current: on 2026-09-01 an account-wide reset replaced a 7d window
 #     resetting in 5 days with one resetting in 16h, and "later resets_at wins"
 #     pinned the stale 29% on every session. "Taken later" is the timestamp of
-#     the last assistant entry in the session's transcript — its last API
-#     response, which is when its snapshot was refreshed. Unlike the file mtime
-#     it does not move on non-API writes. Stored per window as taken_at.
+#     the last real assistant entry in the session's transcript — its last API
+#     response, which is when its snapshot was refreshed (computed with the
+#     context depth above). Unlike the file mtime it does not move on non-API
+#     writes. Stored per window as taken_at.
+#   Liveness is decided BEFORE the tie-break: an expired cached window with a
+#     later taken_at once beat the live one and emptied the slot ("5h —" while
+#     the session held data), flapping as sessions alternated renders.
 rl_cache="$HOME/.claude/rate-limits-cache.json"
-taken_at=0
-if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
-  taken_at=$(tail -n 400 "$transcript_p" 2>/dev/null | jq -s -r '
-    [ .[] | select(.type == "assistant") | .timestamp | strings ] | last
-    | if . == null then 0 else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end
-  ' 2>/dev/null)
-  case "$taken_at" in ''|*[!0-9]*) taken_at=0 ;; esac
-fi
 mine=$(echo "$input" | jq -c --argjson t "$taken_at" \
   '.rate_limits // {} | map_values(. + {taken_at: $t})' 2>/dev/null)
 [ -n "$mine" ] || mine="{}"
@@ -231,8 +246,8 @@ merged=$(jq -c -n --argjson a "$cached" --argjson b "$mine" --argjson now "$now"
     elif (y.taken_at // 0) < (x.taken_at // 0) then x
     elif y.resets_at > x.resets_at then y else x end;
   def live(w): if w == null or (w.resets_at // 0) <= $now then null else w end;
-  { five_hour: live(pick($a.five_hour; $b.five_hour)),
-    seven_day: live(pick($a.seven_day; $b.seven_day)) }
+  { five_hour: pick(live($a.five_hour); live($b.five_hour)),
+    seven_day: pick(live($a.seven_day); live($b.seven_day)) }
   | with_entries(select(.value != null))
 ' 2>/dev/null)
 [ -n "$merged" ] || merged="$mine"
