@@ -295,6 +295,20 @@ repo_top=""
 # needs no width assumption at all. Set to e.g. "~" if you want a marker back.
 CLEAN_GLYPH=""
 
+# Trunk of a repo: the branch origin/HEAD names when it exists locally, else
+# main, else master; prints nothing when none exists. "main first" counted a
+# repo's real master trunk as work in flight whenever a stale main was left
+# behind by a half-done rename.
+trunk_of() {
+  _h=$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+  for _b in "${_h#origin/}" main master; do
+    [ -n "$_b" ] || continue
+    if git -C "$1" rev-parse --verify --quiet "refs/heads/$_b" >/dev/null 2>&1; then
+      printf '%s' "$_b"; return
+    fi
+  done
+}
+
 # Render one repo's status into git_display. Args: <label> <repo_path>
 render_repo() {
   label=$1
@@ -313,12 +327,7 @@ render_repo() {
   # Only the first existed until 2026-08-01, which meant a branch became
   # INVISIBLE at the exact moment it became deletable. Measured across 15 repos
   # that day: 7 unmerged shown, 41 merged branches sitting unseen.
-  trunk=""
-  if git -C "$repo" rev-parse --verify --quiet main >/dev/null 2>&1; then
-    trunk=main
-  elif git -C "$repo" rev-parse --verify --quiet master >/dev/null 2>&1; then
-    trunk=master
-  fi
+  trunk=$(trunk_of "$repo")
   unmerged=0
   merged=0
   if [ -n "$trunk" ]; then
@@ -461,9 +470,9 @@ if [ -n "$wt_paths" ]; then
     if [ -e "$1/.git" ]; then set -- "$1"; else set -- "$1"/*/; fi
     for _s in "$@"; do
       [ -e "$_s/.git" ] || continue
-      _t=main
-      git -C "$_s" rev-parse --verify --quiet main >/dev/null 2>&1 || _t=master
-      _a=$(git -C "$_s" rev-list --count "$_t..HEAD" 2>/dev/null || echo 0)
+      _t=$(trunk_of "$_s")
+      _a=0
+      [ -n "$_t" ] && _a=$(git -C "$_s" rev-list --count "$_t..HEAD" 2>/dev/null)
       case "$_a" in ''|*[!0-9]*) _a=0 ;; esac
       _c=$(git -C "$_s" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
       case "$_c" in ''|*[!0-9]*) _c=0 ;; esac

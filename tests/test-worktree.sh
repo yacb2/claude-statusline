@@ -160,5 +160,21 @@ l3=$(line 3 "$FIX/plain")
 want     "surviving worktree still listed" "$l3" "plain-x"
 want_not "prunable worktree is not listed" "$l3" "plain-gone"
 
+# --------------------------- 8. trunk is what origin/HEAD says, not "main first"
+# A repo whose trunk is master with a stale main left over from a half-done
+# rename: preferring main counted master and a branch merged into it as "+2
+# branches" in flight, and reported nothing as deletable.
+$GIT -c init.defaultBranch=master init -q "$FIX/mm"
+$GIT -C "$FIX/mm" commit -q --allow-empty -m init
+$GIT -C "$FIX/mm" branch main
+$GIT -C "$FIX/mm" commit -q --allow-empty -m second
+$GIT -C "$FIX/mm" branch done
+$GIT -C "$FIX/mm" update-ref refs/remotes/origin/master HEAD
+$GIT -C "$FIX/mm" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+l2=$(line 2 "$FIX/mm")
+want     "trunk follows origin/HEAD"           "$l2" "mm(master)"
+want_not "trunk itself is not in flight"       "$l2" "branch"
+want     "branches merged into master count"   "$l2" "2 merged"
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]
