@@ -69,15 +69,12 @@ model=$(echo "$input" | jq -r '.model.display_name // "Claude"' \
   | sed -E 's/^Claude //; s/ \([0-9]+[MmKk] context\)$//')
 
 # --- Context window ---
-# Resolution order:
-# 0. Transcript-derived depth — max over usage.iterations. See below.
-# 1. Current schema (Claude Code 2.1.x): precise counts from context_window
-#    (total_input_tokens + context_window_size).
-# 2. Legacy schema: absolute tokens_used + tokens_remaining.
-# 3. Fall back to remaining_percentage with model-id detection.
-# 4. Default 1M-context models to 1M; legacy 200k assumption otherwise.
+# Depth is the transcript-derived count when the transcript is readable, else
+# context_window.total_input_tokens; the window size is always
+# context_window.context_window_size (docs list it as never absent). Nothing
+# else: the pre-2.1 schemas once handled here cannot arrive any more.
 #
-# Why 0 exists and outranks 1: `context_window.total_input_tokens` SUMS the
+# Why the transcript outranks the payload: `context_window.total_input_tokens` SUMS the
 # iterations of a multi-iteration turn. Observed live on 2026-08-13 — a 3-iteration
 # turn reported 394,807 while the window actually held 198,928, a 1.98x overstatement
 # that pushed the display from green into red. Across 86,800 Opus 5 turns, 4.0% are
@@ -95,7 +92,6 @@ model=$(echo "$input" | jq -r '.model.display_name // "Claude"' \
 # stamped a stale snapshot as fresh. Lines are parsed one by one (fromjson?) so a
 # last line still being written cannot discard the whole window.
 now=$(date +%s)
-model_id=$(echo "$input" | jq -r '.model.id // ""')
 transcript_p=$(echo "$input" | jq -r '.transcript_path // empty')
 depth_tok=""
 taken_at=""
@@ -124,58 +120,19 @@ fi
 [ -n "$taken_at" ] || taken_at=$now
 total_input=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
 ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
-tokens_used=$(echo "$input" | jq -r '.context_window.tokens_used // empty')
-tokens_remaining=$(echo "$input" | jq -r '.context_window.tokens_remaining // empty')
-remaining=$(echo "$input" | jq -r '.context_window.remaining_percentage // empty')
+used_tokens=${depth_tok:-$total_input}
 
-if [ -n "$depth_tok" ] && [ -n "$ctx_size" ] && [ "$ctx_size" != "null" ] && [ "$ctx_size" -gt 0 ]; then
-  MAX_CONTEXT="$ctx_size"
-  used_tokens="$depth_tok"
-  remaining_tokens=$((ctx_size - depth_tok))
+if [ -n "$used_tokens" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ]; then
+  remaining_tokens=$((ctx_size - used_tokens))
   [ "$remaining_tokens" -lt 0 ] && remaining_tokens=0
-  remaining=$(awk "BEGIN { printf \"%.1f\", 100 * $remaining_tokens / $MAX_CONTEXT }")
-elif [ -n "$total_input" ] && [ -n "$ctx_size" ] && [ "$total_input" != "null" ] && [ "$ctx_size" != "null" ] && [ "$ctx_size" -gt 0 ]; then
-  MAX_CONTEXT="$ctx_size"
-  used_tokens="$total_input"
-  remaining_tokens=$((ctx_size - total_input))
-  [ "$remaining_tokens" -lt 0 ] && remaining_tokens=0
-  remaining=$(awk "BEGIN { printf \"%.1f\", 100 * $remaining_tokens / $MAX_CONTEXT }")
-elif [ -n "$tokens_used" ] && [ -n "$tokens_remaining" ] && [ "$tokens_used" != "null" ] && [ "$tokens_remaining" != "null" ] && [ "$((tokens_used + tokens_remaining))" -gt 0 ]; then
-  used_tokens="$tokens_used"
-  remaining_tokens="$tokens_remaining"
-  MAX_CONTEXT=$((tokens_used + tokens_remaining))
-  if [ -z "$remaining" ] || [ "$remaining" = "null" ]; then
-    remaining=$(awk "BEGIN { printf \"%.1f\", 100 * $tokens_remaining / $MAX_CONTEXT }")
-  fi
-elif [ -n "$remaining" ] && [ "$remaining" != "null" ]; then
-  case "$model_id" in
-    *"[1m]"*|*"-1m"*) MAX_CONTEXT=1000000 ;;
-    claude-opus-4-7*|claude-opus-4-8*) MAX_CONTEXT=1000000 ;;
-    *) MAX_CONTEXT=200000 ;;
-  esac
-  used_tokens=$(awk "BEGIN { printf \"%.0f\", $MAX_CONTEXT * (1 - $remaining/100) }")
-  remaining_tokens=$(awk "BEGIN { printf \"%.0f\", $MAX_CONTEXT * $remaining/100 }")
-else
-  MAX_CONTEXT=0
-fi
-
-if [ "${MAX_CONTEXT:-0}" -gt 0 ]; then
   used_fmt=$(awk "BEGIN { printf \"%.0fk\", $used_tokens/1000 }")
   remaining_fmt=$(awk "BEGIN { printf \"%.0fk\", $remaining_tokens/1000 }")
-  total_fmt=$(awk "BEGIN { printf \"%.0fk\", $MAX_CONTEXT/1000 }")
-  used_pct=$(awk "BEGIN { printf \"%.0f\", 100 - $remaining }")
+  used_pct=$(awk "BEGIN { printf \"%.0f\", 100 * $used_tokens / $ctx_size }")
   ctx_color=$(depth_color "$used_tokens" "$used_pct")
   # Used in urgency color (grows toward red); remaining in blue (capacity).
   ctx_display="${ctx_color}${used_fmt}${RESET}${DIM}/${RESET}${BLUE}${remaining_fmt}${RESET}"
-  # Model tag: short context window label (1M, 200k, etc.)
-  if [ "$MAX_CONTEXT" -ge 1000000 ]; then
-    model_tag="1M"
-  else
-    model_tag=$(awk "BEGIN { printf \"%.0fk\", $MAX_CONTEXT/1000 }")
-  fi
 else
   ctx_display="${DIM}—${RESET}"
-  model_tag=""
 fi
 
 # --- Settings: effort + advisor ---
@@ -250,7 +207,6 @@ merged=$(jq -c -n --argjson a "$cached" --argjson b "$mine" --argjson now "$now"
     seven_day: pick(live($a.seven_day); live($b.seven_day)) }
   | with_entries(select(.value != null))
 ' 2>/dev/null)
-[ -n "$merged" ] || merged="$mine"
 if [ "$merged" != "$cached" ]; then
   # Atomic write: several sessions render concurrently.
   printf '{"rate_limits":%s}\n' "$merged" > "$rl_cache.tmp.$$" \
@@ -283,17 +239,10 @@ fi
 # --- Git: per-repo changes in workspace ---
 # Detects sub-repos under the workspace root (cwd or nearest *_ws ancestor)
 # and shows compact change/ahead counters per repo. Skips repos with no activity.
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
+cwd=$(echo "$input" | jq -r '.workspace.current_dir // ""')
 git_display=""
 ws_root=""
 repo_top=""
-# Marker for deletable branches. Intentionally EMPTY: the first version used
-# ✂ (U+2702), which carries emoji presentation and is rendered double-width by
-# most terminals while the status line accounts for one cell — so the glyph
-# overlapped the count. Any replacement must be narrow *and* unambiguous;
-# ✱ ↑ ↓ ⎇ already in use qualify, most pictographs do not. Plain gray text
-# needs no width assumption at all. Set to e.g. "~" if you want a marker back.
-CLEAN_GLYPH=""
 
 # Trunk of a repo: the branch origin/HEAD names when it exists locally, else
 # main, else master; prints nothing when none exists. "main first" counted a
@@ -334,8 +283,7 @@ render_repo() {
     unmerged=$(git -C "$repo" for-each-ref \
       --no-merged="refs/heads/$trunk" \
       --format='%(refname:short)' refs/heads/ 2>/dev/null \
-      | grep -cvE "^${trunk}$" 2>/dev/null)
-    [ -z "$unmerged" ] && unmerged=0
+      | grep -cvE "^${trunk}$")
     # Exclude trunk and every branch checked out in ANY worktree — git refuses
     # to delete those ("cannot delete branch 'x' used by worktree at ..."), so
     # counting them would offer work that cannot be done. `worktree list`
@@ -366,8 +314,10 @@ render_repo() {
   [ "$ahead" -gt 0 ] && entry="$entry ${CYAN}↑$ahead${RESET}"
   [ "$behind" -gt 0 ] && entry="$entry ${RED}↓$behind${RESET}"
   [ "$unmerged" -gt 0 ] && entry="${entry}${SEP}${YELLOW}+${unmerged} branch$([ "$unmerged" -gt 1 ] && echo es)${RESET}"
-  # Gray, not yellow: deletable branches are housekeeping, never urgency.
-  [ "$merged" -gt 0 ] && entry="${entry}${SEP}${GRAY}${CLEAN_GLYPH}${merged} merged${RESET}"
+  # Gray, not yellow: deletable branches are housekeeping, never urgency. No
+  # glyph: ✂ has emoji presentation and renders double-width while the status
+  # line accounts for one cell, so it overlapped the count.
+  [ "$merged" -gt 0 ] && entry="${entry}${SEP}${GRAY}${merged} merged${RESET}"
   [ -n "$git_display" ] && git_display="$git_display${SEP}"
   git_display="$git_display$entry"
 }

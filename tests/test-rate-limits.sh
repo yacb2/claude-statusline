@@ -13,10 +13,13 @@
 # replaced the whole snapshot, so an idle session could publish a partial, stale
 # one over the good one — and every session lost the 5h window.
 #
-# The rule under test: merge PER WINDOW from the data itself, never from a clock.
-#   same resets_at   -> higher used_percentage wins (usage is cumulative)
-#   later resets_at  -> newer window wins
-#   resets_at passed -> dropped, rendered as a dim placeholder
+# The rule under test: merge PER WINDOW from the data itself, never from a file
+# clock.
+#   resets_at passed            -> dropped, rendered as a dim placeholder
+#   same resets_at              -> higher used_percentage wins (usage is cumulative)
+#   different resets_at, both live -> the snapshot taken later wins, dated by the
+#     last real assistant response in the transcript (taken_at); equal -> later
+#     resets_at
 #
 # Self-contained: HOME is redirected to a fixture dir so the real cache and
 # settings.json are never read or written.
@@ -27,8 +30,8 @@ FIX=$(mktemp -d "${TMPDIR:-/tmp}/statusline-rl-test.XXXXXX")
 trap 'rm -rf "$FIX"' EXIT INT TERM
 mkdir -p "$FIX/.claude"
 CACHE="$FIX/.claude/rate-limits-cache.json"
-# A transcript newer than anything the cache claims, as in the real incident:
-# the idle session's transcript had the freshest mtime, its data was the stalest.
+# The session's transcript: its last real assistant entry dates the snapshot
+# (taken_at). Cases that need a date write entries into it and truncate after.
 TRANSCRIPT="$FIX/transcript.jsonl"
 : > "$TRANSCRIPT"
 
