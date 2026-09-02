@@ -437,8 +437,14 @@ if [ -n "$ws_root" ]; then
 "
   done
 elif [ -n "$repo_top" ]; then
+  # One paragraph per worktree; the first is the main checkout. A worktree whose
+  # directory was deleted stays listed as "prunable" until `git worktree prune`
+  # and would otherwise render as "<name> —", i.e. finished — skip it.
   wt_paths=$(git -C "$repo_top" worktree list --porcelain 2>/dev/null \
-    | sed -n 's#^worktree ##p' | sed '1d')
+    | awk 'BEGIN { RS = "" } NR > 1 {
+        n = split($0, l, "\n"); keep = 1
+        for (i = 2; i <= n; i++) if (l[i] ~ /^prunable/) keep = 0
+        if (keep) print substr(l[1], 10) }')
   wt_cur=$repo_top   # matches an entry only when cwd is inside a linked worktree
 fi
 

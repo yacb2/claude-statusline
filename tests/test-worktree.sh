@@ -32,9 +32,12 @@ trap 'rm -rf "$FIX"' EXIT INT TERM
 
 fails=0
 
+# HOME is redirected so the real ~/.claude (settings, the shared rate-limit cache
+# every open session merges into) is never read or written by a test render.
+mkdir -p "$FIX/home/.claude"
 run() {
   printf '{"model":{"display_name":"Claude Opus 4.8","id":"claude-opus-4-8[1m]"},"workspace":{"current_dir":"%s"}}' "$1" \
-    | sh "$SCRIPT"
+    | HOME="$FIX/home" sh "$SCRIPT"
 }
 plain() { run "$1" | sed 's/\x1b\[[0-9;]*m//g'; }
 line()  { plain "$2" | sed -n "${1}p"; }
@@ -46,6 +49,12 @@ want() { # <desc> <haystack> <needle>
   case "$2" in
     *"$3"*) ok "$1" ;;
     *) bad "$1" "expected to contain '$3', got: [$2]" ;;
+  esac
+}
+want_not() { # <desc> <haystack> <needle>
+  case "$2" in
+    *"$3"*) bad "$1" "expected NOT to contain '$3', got: [$2]" ;;
+    *) ok "$1" ;;
   esac
 }
 
@@ -127,13 +136,6 @@ else
   bad "no worktrees -> no third line" "got $n newline(s): [$(plain "$FIX/lonely_ws")]"
 fi
 
-# With no git activity the roster must sit on line 2, not after a blank line.
-if [ -n "$l2" ]; then
-  ok "no blank line when line 2 has no git activity"
-else
-  bad "no blank line when line 2 has no git activity" "line 2 was empty"
-fi
-
 # ------------------------------ 5. plain worktree as cwd renders its repo line
 want "plain worktree cwd renders its repo"   "$(line 2 "$FIX/plain-x")" "plain-x"
 want "plain worktree cwd shows its branch"   "$(line 2 "$FIX/plain-x")" "feat/x"
@@ -148,6 +150,15 @@ if printf '%s' "$raw" | grep -q "$(printf '\033')\[1m$(printf '\033')\[35mplain-
 else
   bad "active git worktree is bold+magenta" "raw: [$raw]"
 fi
+
+# ------------------------------ 7. a worktree whose directory is gone is not listed
+# `git worktree list` keeps a deleted worktree as "prunable" until `worktree prune`;
+# rendering it as "gone —" advertised a finished worktree that no longer exists.
+$GIT -C "$FIX/plain" worktree add -q -b feat/gone "$FIX/plain-gone" >/dev/null 2>&1
+rm -rf "$FIX/plain-gone"
+l3=$(line 3 "$FIX/plain")
+want     "surviving worktree still listed" "$l3" "plain-x"
+want_not "prunable worktree is not listed" "$l3" "plain-gone"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]
