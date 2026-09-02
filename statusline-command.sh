@@ -197,10 +197,27 @@ now=$(date +%s)
 #
 # So the merge is decided by the data itself, per window:
 #   same resets_at   -> higher used_percentage (usage is cumulative in a window)
-#   later resets_at  -> newer window
 #   resets_at <= now -> dropped; rendered as a placeholder, never as a stale %
+#   different, both live -> the snapshot taken later. A natural rollover never
+#     produces this case (the old window is already expired), so two live windows
+#     mean the server replaced one, and resets_at ordering says nothing about
+#     which is current: on 2026-09-01 an account-wide reset replaced a 7d window
+#     resetting in 5 days with one resetting in 16h, and "later resets_at wins"
+#     pinned the stale 29% on every session. "Taken later" is the timestamp of
+#     the last assistant entry in the session's transcript — its last API
+#     response, which is when its snapshot was refreshed. Unlike the file mtime
+#     it does not move on non-API writes. Stored per window as taken_at.
 rl_cache="$HOME/.claude/rate-limits-cache.json"
-mine=$(echo "$input" | jq -c '.rate_limits // {}' 2>/dev/null)
+taken_at=0
+if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
+  taken_at=$(tail -n 400 "$transcript_p" 2>/dev/null | jq -s -r '
+    [ .[] | select(.type == "assistant") | .timestamp | strings ] | last
+    | if . == null then 0 else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end
+  ' 2>/dev/null)
+  case "$taken_at" in ''|*[!0-9]*) taken_at=0 ;; esac
+fi
+mine=$(echo "$input" | jq -c --argjson t "$taken_at" \
+  '.rate_limits // {} | map_values(. + {taken_at: $t})' 2>/dev/null)
 [ -n "$mine" ] || mine="{}"
 cached="{}"
 [ -f "$rl_cache" ] && cached=$(jq -c '.rate_limits // {}' "$rl_cache" 2>/dev/null)
@@ -208,9 +225,11 @@ cached="{}"
 merged=$(jq -c -n --argjson a "$cached" --argjson b "$mine" --argjson now "$now" '
   def pick(x; y):
     if x == null then y elif y == null then x
-    elif y.resets_at > x.resets_at then y
-    elif y.resets_at < x.resets_at then x
-    elif (y.used_percentage // 0) > (x.used_percentage // 0) then y else x end;
+    elif y.resets_at == x.resets_at then
+      (if (y.used_percentage // 0) > (x.used_percentage // 0) then y else x end)
+    elif (y.taken_at // 0) > (x.taken_at // 0) then y
+    elif (y.taken_at // 0) < (x.taken_at // 0) then x
+    elif y.resets_at > x.resets_at then y else x end;
   def live(w): if w == null or (w.resets_at // 0) <= $now then null else w end;
   { five_hour: live(pick($a.five_hour; $b.five_hour)),
     seven_day: live(pick($a.seven_day; $b.seven_day)) }

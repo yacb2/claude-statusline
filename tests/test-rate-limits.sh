@@ -97,5 +97,25 @@ out=$(run "")
 want "no data -> 5h placeholder" "$out" "5h —"
 want "no data -> 7d placeholder" "$out" "7d —"
 
+# ------------------------------------ 6. a server-side reset replaces a window with an
+# EARLIER resets_at. Observed 2026-09-01: every quota was reset account-wide; the live
+# snapshot became 7d 1% resetting in 16h while the cache held 7d 29% resetting in 5
+# days, and "later resets_at wins" pinned the stale 29% on every session. Between two
+# live windows the tie-break is the snapshot's own age: the timestamp of the last
+# assistant entry in the transcript, which is when that session last heard from the
+# API. An idle session re-reporting the old window later must not win it back.
+iso() { jq -n --argjson t "$1" '$t | todate'; }
+in_16h=$((now + 57600))
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d,\"taken_at\":$((now - 86400))}}}"
+printf '{"type":"assistant","timestamp":%s}\n' "$(iso "$now")" > "$TRANSCRIPT"
+out=$(run "{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h}}")
+want     "fresher snapshot wins over a later resets_at" "$out" "7d 1%"
+want_not "reset-away window is not rendered"           "$out" "7d 29%"
+printf '{"type":"assistant","timestamp":%s}\n' "$(iso "$((now - 172800))")" > "$TRANSCRIPT"
+out=$(run "{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d}}")
+want     "idle session cannot bring the old window back" "$out" "7d 1%"
+[ "$(cache_week)" = "1" ] && ok "cache keeps the fresher window" || bad "cache keeps the fresher window" "cache seven_day: $(cache_week)"
+: > "$TRANSCRIPT"
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]
