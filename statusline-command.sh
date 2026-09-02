@@ -68,8 +68,13 @@ depth_color() {
 # on a render Claude Code may request every 300 ms. The model name drops the
 # "Claude " prefix and any " (NM context)" suffix: "Claude Opus 4.7 (1M context)"
 # -> "Opus 4.7". Defaults first, so malformed stdin degrades to placeholders.
+# Every interpolation goes through `s`, which makes it ONE string: @sh expands an
+# array into several quoted words, and `x='a' 'b'` would run b as a command.
 model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
-eval "$(echo "$input" | jq -r '@sh "model=\((.model.display_name // "Claude") | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "") total_input=\(.context_window.total_input_tokens // "") ctx_size=\(.context_window.context_window_size // "") effort=\(.effort.level // "") cwd=\(.workspace.current_dir // "") rate_limits=\(.rate_limits // {} | tojson)"' 2>/dev/null)"
+eval "$(echo "$input" | jq -r '
+  def s: if type == "string" then . elif type == "number" then tostring else tojson end;
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson)"
+' 2>/dev/null)"
 
 # --- Context window ---
 # Depth is the transcript-derived count when the transcript is readable, else
@@ -141,7 +146,8 @@ fi
 settings_file="$HOME/.claude/settings.json"
 effort_cfg="—"; advisor="—"
 [ -f "$settings_file" ] \
-  && eval "$(jq -r '@sh "effort_cfg=\(.effortLevel // "—") advisor=\(.advisorModel // "—")"' "$settings_file" 2>/dev/null)"
+  && eval "$(jq -r 'def s: if type == "string" then . else tojson end;
+    @sh "effort_cfg=\(.effortLevel // "—" | s) advisor=\(.advisorModel // "—" | s)"' "$settings_file" 2>/dev/null)"
 [ -n "$effort" ] || effort=$effort_cfg
 
 # --- Rate limits ---
@@ -204,7 +210,8 @@ eval "$(jq -r -n --argjson a "$cached" --argjson b "$rate_limits" --argjson t "$
   | { five_hour: pick(live($a.five_hour); live($b.five_hour)),
       seven_day: pick(live($a.seven_day); live($b.seven_day)) }
   | with_entries(select(.value != null))
-  | @sh "merged=\(tojson) five=\(.five_hour.used_percentage // "") five_reset=\(.five_hour.resets_at // "") week=\(.seven_day.used_percentage // "") week_reset=\(.seven_day.resets_at // "")"
+  | def n: if type == "number" then tostring else "" end;
+    @sh "merged=\(tojson) five=\(.five_hour.used_percentage | n) five_reset=\(.five_hour.resets_at | n) week=\(.seven_day.used_percentage | n) week_reset=\(.seven_day.resets_at | n)"
 ' 2>/dev/null)"
 if [ "$merged" != "$cached" ]; then
   # Atomic write: several sessions render concurrently.

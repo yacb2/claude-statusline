@@ -155,5 +155,15 @@ seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_
 out=$(run "{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h}}")
 want "undated live snapshot wins over an older cached window" "$out" "7d 1%"
 
+# ------------------------------------ 10. non-scalar payload fields stay one word
+# The payload is read with one jq emitting @sh assignments for eval. @sh expands
+# an array into several quoted words, and `model='a' 'b'` would run b as a
+# command; every interpolation is coerced to one string first.
+marker="$FIX/ran-a-command"
+out=$(printf '{"model":{"display_name":"Opus"},"transcript_path":"%s","rate_limits":{"five_hour":{"used_percentage":[1,"touch","%s"],"resets_at":%s}}}' "$TRANSCRIPT" "$marker" "$in_2h" \
+  | HOME="$FIX" sh "$SCRIPT" 2>/dev/null | sed -n '1p' | sed 's/\x1b\[[0-9;]*m//g')
+[ ! -e "$marker" ] && ok "array field never becomes a command" || bad "array field never becomes a command" "marker file was created"
+want "line still renders" "$out" "5h"
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]
