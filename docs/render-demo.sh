@@ -8,7 +8,7 @@ g() { git -c user.email=t@t -c user.name=t -c init.defaultBranch=main "$@" >/dev
 now=$(date +%s)
 five=$((now + 4380)); week=$(( (now/86400+3)*86400 + 9*3600 ))
 run() {
-  printf '{"model":{"display_name":"Claude Opus 4.8 (1M context)","id":"claude-opus-4-8[1m]"},"workspace":{"current_dir":"%s"},"effort":{"level":"medium"},"context_window":{"total_input_tokens":%s,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":29,"resets_at":%s},"seven_day":{"used_percentage":63,"resets_at":%s}}}' "$1" "$2" "$five" "$week" | sh "$S"
+  printf '{"model":{"display_name":"Claude Opus 4.8 (1M context)","id":"claude-opus-4-8[1m]"},"workspace":{"current_dir":"%s"},"effort":{"level":"medium"},"context_window":{"total_input_tokens":%s,"context_window_size":1000000},"prompt_cache":{"warm":true,"ttl":"1h","expires_at":%s,"misses":0,"recache_tokens_if_cold":52000},"rate_limits":{"five_hour":{"used_percentage":29,"resets_at":%s},"seven_day":{"used_percentage":63,"resets_at":%s}}}' "$1" "$2" "$((now + 2280))" "$five" "$week" | sh "$S"
   printf '\n\n'
 }
 # A. single repo, cwd in a subdir, two worktrees via git worktree add (Claude Code style)

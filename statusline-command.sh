@@ -71,9 +71,10 @@ depth_color() {
 # Every interpolation goes through `s`, which makes it ONE string: @sh expands an
 # array into several quoted words, and `x='a' 'b'` would run b as a command.
 model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
+pc_present=""; pc_warm=""; pc_exp=""; pc_cold=""; pc_misses=""
 eval "$(echo "$input" | jq -r '
   def s: if type == "string" then . elif type == "number" then tostring else tojson end;
-  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson)"
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s)"
 ' 2>/dev/null)"
 
 # --- Context window ---
@@ -138,6 +139,37 @@ if [ -n "$used_tokens" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ]; then
   ctx_display="${ctx_color}${used_fmt}${RESET}${DIM}/${RESET}${BLUE}${remaining_fmt}${RESET}"
 else
   ctx_display="${DIM}—${RESET}"
+fi
+
+# --- Prompt cache ---
+# `prompt_cache` (Claude Code >= 2.1.251) is computed by Claude Code from the
+# API's cache token counts; it appears after the first response and is absent
+# before, so the element is omitted rather than shown as a placeholder. What the
+# reader needs is a threshold, not a count: measured over 60 sessions on
+# 2026-09-04, the TTL was 1h in 2501 turns (5m in 30); idle 5 min-1 h still hit
+# 58:5, idle past 1 h missed 27:2. So: warm -> minutes until expires_at, yellow
+# under 10m; cold -> the tokens the next request re-caches. Claude Code re-runs
+# the script when a warm cache reaches expires_at, so the flip is not left to
+# refreshInterval. A render can still land between expiry and that re-run:
+# `warm` true with expires_at in the past reads cold, never a negative.
+# `misses` (real misses, compaction rebuilds excluded) only shows when > 0 —
+# a session invalidating its prefix every turn is worth noticing.
+pc_display=""
+if [ -n "$pc_present" ]; then
+  pc_left=""
+  case "$pc_exp" in ''|*[!0-9]*) ;; *) pc_left=$((pc_exp - now)) ;; esac
+  if [ "$pc_warm" = "true" ] && [ -n "$pc_left" ] && [ "$pc_left" -gt 0 ]; then
+    pc_min=$((pc_left / 60))
+    if [ "$pc_left" -lt 600 ]; then c=$YELLOW; else c=$GREEN; fi
+    pc_display="${c}cache ${pc_min}m${RESET}"
+  else
+    pc_display="${GRAY}cache cold${RESET}"
+    case "$pc_cold" in
+      ''|*[!0-9]*) ;;
+      *) pc_display="$pc_display ${GRAY}$(awk "BEGIN { printf \"%.0fk\", $pc_cold/1000 }")${RESET}" ;;
+    esac
+  fi
+  case "$pc_misses" in ''|*[!0-9]*|0) ;; *) pc_display="$pc_display ${RED}m${pc_misses}${RESET}" ;; esac
 fi
 
 # --- Settings: effort + advisor ---
@@ -477,12 +509,12 @@ if [ -n "$wt_paths" ]; then
 fi
 
 # --- Render ---
-# Line 1: model · used/total · effort/advisor · rate limits
+# Line 1: model · used/total · prompt cache · effort/advisor · rate limits
 # Note: Claude Code auto-appends "(1M context)" or equivalent after the model name,
 # so we don't add our own context-size tag here.
 model_part="${BOLD}${model}${RESET}"
 cfg_part="${GRAY}${effort}/${advisor}${RESET}"
-line1="${model_part}${SEP}${ctx_display}${SEP}${cfg_part}${SEP}${rl}"
+line1="${model_part}${SEP}${ctx_display}${SEP}${pc_display:+${pc_display}${SEP}}${cfg_part}${SEP}${rl}"
 printf "%s\n" "$line1"
 
 # Line 2: git per-repo (only if there's activity)

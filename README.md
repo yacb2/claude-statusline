@@ -8,10 +8,11 @@ Real output of the script over synthetic fixtures — regenerate with `sh docs/r
 
 ## What each line shows
 
-**Line 1 — session.** Model · used/remaining context · effort/advisor · rate limits.
+**Line 1 — session.** Model · used/remaining context · prompt cache · effort/advisor · rate limits.
 
 - Context depth is coloured by **absolute tokens**, not percentage of window: <200k green, 200k yellow, 250k orange, 300k red. On a 1M model 400k reads as "40%" and colours green, while turns at that depth run ~1.5x slower than the same session's sub-100k baseline — depth is the binding constraint, not overflow. Percentage still governs on small windows; whichever reads more urgent wins.
 - Depth is read from the transcript as the **max over a turn's iterations**, not the top-level sum Claude Code reports: a multi-iteration turn inflates `total_input_tokens` ~2x, enough to jump two colour bands.
+- Prompt cache (Claude Code ≥ 2.1.251, from the `prompt_cache` field) is a **threshold, not a count**: `cache 42m` while the cached prefix is warm, with the minutes until it expires (yellow under 10m); `cache cold 45k` once it has expired, with the tokens the next request re-caches. `mN` follows only when the session has real misses (compaction rebuilds excluded). Measured over 60 sessions: the TTL was 1h in 2501 turns and 5m in 30; idle 5 min–1 h still hit 58:5, idle past 1 h missed 27:2 — so what matters is which side of the TTL you are on. Omitted before the first response.
 - Rate limits show the 5-hour and 7-day windows with reset time. Both slots always render; `5h —` means "no live data for this window", never a stale figure.
 
 **Line 2 — git.** One entry per repo: `name(branch)`, then only the counters that are non-zero — `N✱` uncommitted files, `↑N`/`↓N` against upstream, `+N branches` unmerged into trunk, `N merged` branches safe to delete (trunk and anything checked out in a worktree are excluded).
