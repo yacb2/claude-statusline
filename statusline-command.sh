@@ -74,7 +74,7 @@ model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd="";
 pc_present=""; pc_warm=""; pc_exp=""; pc_cold=""; pc_misses=""
 eval "$(echo "$input" | jq -r '
   def s: if type == "string" then . elif type == "number" then tostring else tojson end;
-  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s)"
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s)"
 ' 2>/dev/null)"
 
 # --- Context window ---
@@ -375,6 +375,9 @@ iterate_subrepos() {
   done
 }
 
+# Anchored to workspace.project_dir (the session's starting directory), NOT
+# current_dir: a cd into another project or up to ~/Documents/projects would
+# otherwise re-anchor the render and list every repo under that parent.
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   search="$cwd"
   # Walk to the OUTERMOST *_ws ancestor (don't break), so a nested scratch_ws

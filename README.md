@@ -21,9 +21,9 @@ Real output of the script over synthetic fixtures — regenerate with `sh docs/r
 
 ## Layouts
 
-Nothing to configure — the script reads the session's working directory and picks the layout:
+Nothing to configure — the script reads the directory the session **started** in (`workspace.project_dir`) and picks the layout. `cd`-ing elsewhere mid-session does not re-anchor it: the line keeps showing the project you opened.
 
-| Working directory | Line 2 | Line 3 |
+| Session directory | Line 2 | Line 3 |
 |---|---|---|
 | Anywhere inside a git repo (its root, a subdirectory, a linked worktree) | that repo | `git worktree list` of it, minus the main checkout — plain `git worktree add` and Claude Code's `.claude/worktrees/<name>` alike |
 | A folder that is not a repo but holds repos | one entry per immediate child repo | — |
