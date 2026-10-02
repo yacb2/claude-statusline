@@ -16,10 +16,9 @@
 # The rule under test: merge PER WINDOW from the data itself, never from a file
 # clock.
 #   resets_at passed            -> dropped, rendered as a dim placeholder
-#   same resets_at              -> higher used_percentage wins (usage is cumulative)
-#   different resets_at, both live -> the snapshot taken later wins, dated by the
-#     last real assistant response in the transcript (taken_at); equal -> later
-#     resets_at
+#   both live                   -> the snapshot taken later wins, dated by the
+#     last real assistant response in the transcript (taken_at), even inside one
+#     window (case 11); equal -> higher used_percentage, then later resets_at
 #
 # Self-contained: HOME is redirected to a fixture dir so the real cache and
 # settings.json are never read or written.
@@ -68,13 +67,16 @@ cache_five() { jq -r '.rate_limits.five_hour.used_percentage // "absent"' "$CACH
 cache_week() { jq -r '.rate_limits.seven_day.used_percentage // "absent"' "$CACHE"; }
 
 # ------------------------------------ 1. a partial snapshot must not erase a window
-seed "{\"rate_limits\":{\"five_hour\":{\"used_percentage\":29,\"resets_at\":$in_2h},\"seven_day\":{\"used_percentage\":63,\"resets_at\":$in_5d}}}"
+# The idle session's last response is older than the active one's cached snapshot.
+seed "{\"rate_limits\":{\"five_hour\":{\"used_percentage\":29,\"resets_at\":$in_2h},\"seven_day\":{\"used_percentage\":63,\"resets_at\":$in_5d,\"taken_at\":$((now - 60))}}}"
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":2000}}}\n' "$(jq -n --argjson t "$((now - 3600))" '$t | todate')" > "$TRANSCRIPT"
 out=$(run "{\"seven_day\":{\"used_percentage\":40,\"resets_at\":$in_5d}}")
 want     "5h survives a payload that lacks it"     "$out" "5h 29%"
 want     "stale 7d from an idle session loses"     "$out" "7d 63%"
 want_not "stale 7d is not rendered"                "$out" "7d 40%"
 [ "$(cache_five)" = "29" ] && ok "cache keeps five_hour" || bad "cache keeps five_hour" "cache five_hour: $(cache_five)"
 [ "$(cache_week)" = "63" ] && ok "cache keeps the higher 7d" || bad "cache keeps the higher 7d" "cache seven_day: $(cache_week)"
+: > "$TRANSCRIPT"
 
 # ------------------------------------ 2. same window: the higher usage is the newer
 seed "{\"rate_limits\":{\"five_hour\":{\"used_percentage\":29,\"resets_at\":$in_2h}}}"
@@ -164,6 +166,19 @@ out=$(printf '{"model":{"display_name":"Opus"},"transcript_path":"%s","rate_limi
   | HOME="$FIX" sh "$SCRIPT" 2>/dev/null | sed -n '1p' | sed 's/\x1b\[[0-9;]*m//g')
 [ ! -e "$marker" ] && ok "array field never becomes a command" || bad "array field never becomes a command" "marker file was created"
 want "line still renders" "$out" "5h"
+
+# ------------------------------------ 11. a reset that keeps resets_at is not pinned
+# Observed 2026-10-02: an account-wide reset zeroed the 7d usage but kept the window's
+# resets_at (Mon 09:00). "Same resets_at -> higher usage" then pinned the pre-reset
+# 98% on every session for hours. Within one window the fresher snapshot is the truth;
+# an idle session's stale one is older (case 1), so it still loses.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":98,\"resets_at\":$in_5d,\"taken_at\":$((now - 28800))}}}"
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":2000}}}\n' "$(iso "$((now - 60))")" > "$TRANSCRIPT"
+out=$(run "{\"seven_day\":{\"used_percentage\":4,\"resets_at\":$in_5d}}")
+want     "fresher snapshot wins inside the same window" "$out" "7d 4%"
+want_not "pre-reset 7d is not rendered"                 "$out" "7d 98%"
+[ "$(cache_week)" = "4" ] && ok "cache drops the pre-reset 7d" || bad "cache drops the pre-reset 7d" "cache seven_day: $(cache_week)"
+: > "$TRANSCRIPT"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

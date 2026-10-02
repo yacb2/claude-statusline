@@ -206,9 +206,13 @@ fmt_left() {
 # stale one over the good one and every session lost the 5h window.
 #
 # So the merge is decided by the data itself, per window:
-#   same resets_at   -> higher used_percentage (usage is cumulative in a window)
 #   resets_at <= now -> dropped; rendered as a placeholder, never as a stale %
-#   different, both live -> the snapshot taken later. A natural rollover never
+#   both live -> the snapshot taken later, whether or not resets_at matches. On
+#     2026-10-02 a reset zeroed the 7d usage but KEPT its resets_at, and "same
+#     resets_at -> higher used_percentage" pinned the pre-reset 98% for hours. An
+#     idle session's stale snapshot is older by construction, so it still loses.
+#     Equal taken_at -> higher used_percentage, then later resets_at.
+#   Different resets_at, both live: a natural rollover never
 #     produces this case (the old window is already expired), so two live windows
 #     mean the server replaced one, and resets_at ordering says nothing about
 #     which is current: on 2026-09-01 an account-wide reset replaced a 7d window
@@ -232,10 +236,10 @@ merged=$cached; five=""; five_reset=""; week=""; week_reset=""
 eval "$(jq -r -n --argjson a "$cached" --argjson b "$rate_limits" --argjson t "$taken_at" --argjson now "$now" '
   def pick(x; y):
     if x == null then y elif y == null then x
-    elif y.resets_at == x.resets_at then
-      (if (y.used_percentage // 0) > (x.used_percentage // 0) then y else x end)
     elif (y.taken_at // 0) > (x.taken_at // 0) then y
     elif (y.taken_at // 0) < (x.taken_at // 0) then x
+    elif y.resets_at == x.resets_at then
+      (if (y.used_percentage // 0) > (x.used_percentage // 0) then y else x end)
     elif y.resets_at > x.resets_at then y else x end;
   def live(w): if w == null or (w.resets_at // 0) <= $now then null else w end;
   ($b | map_values(. + {taken_at: $t})) as $b
