@@ -180,5 +180,17 @@ want_not "pre-reset 7d is not rendered"                 "$out" "7d 98%"
 [ "$(cache_week)" = "4" ] && ok "cache drops the pre-reset 7d" || bad "cache drops the pre-reset 7d" "cache seven_day: $(cache_week)"
 : > "$TRANSCRIPT"
 
+# ------------------------------------ 12. a session with no response is dated by its transcript
+# Observed 2026-10-10: a session resumed and never prompted had no assistant entry, so
+# case 9's "undated -> now" re-stamped its stale 7d 25% on every 60s refresh over the
+# live 35%. Its transcript still dates it: the latest timestamped entry (here a system
+# entry a day old). Only an empty transcript (case 9) falls back to now.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":35,\"resets_at\":$in_5d,\"taken_at\":$((now - 60))}}}"
+printf '{"type":"system","timestamp":%s}\n{"type":"cost-state","timestamp":null}\n' "$(iso "$((now - 86400))")" > "$TRANSCRIPT"
+out=$(run "{\"seven_day\":{\"used_percentage\":25,\"resets_at\":$in_5d}}")
+want "response-less session loses to the live snapshot" "$out" "7d 35%"
+[ "$(cache_week)" = "35" ] && ok "cache keeps the live 7d" || bad "cache keeps the live 7d" "cache seven_day: $(cache_week)"
+: > "$TRANSCRIPT"
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

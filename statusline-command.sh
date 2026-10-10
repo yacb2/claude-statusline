@@ -105,9 +105,12 @@ depth_tok=""
 taken_at=""
 if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
   set -- $(tail -n 400 "$transcript_p" 2>/dev/null | jq -Rs -r '
-    [ split("\n")[] | fromjson? | select(.type == "assistant")
+    def ts: (.timestamp // "" | strings | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0;
+    [ split("\n")[] | fromjson? ] as $e
+    | ([ $e[] | ts ] | max // 0) as $latest
+    | [ $e[] | select(.type == "assistant")
       | (.message.usage // null) as $u | select($u != null)
-      | { t: ((.timestamp // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0),
+      | { t: ts,
           d: (if (($u.iterations // []) | length) > 0 then
                 [ $u.iterations[]
                   | (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.input_tokens // 0)
@@ -116,15 +119,18 @@ if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
                 ($u.cache_read_input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.input_tokens // 0)
               end) }
       | select(.d > 0) ] | last
-    | if . == null then empty else "\(.d) \(.t)" end
+    | if . == null then (if $latest > 0 then "- \($latest)" else empty end) else "\(.d) \(.t)" end
   ' 2>/dev/null)
   depth_tok=$1; taken_at=$2
   case "$depth_tok" in ''|*[!0-9]*) depth_tok="" ;; esac
   case "$taken_at" in ''|*[!0-9]*) taken_at="" ;; esac
 fi
-# No dated response yet (new session, unreadable transcript): the snapshot in hand
-# still came from an API response just now, so it is dated now — not 0, which
-# made every new session lose to whatever the cache held.
+# No real response in the tail: the latest timestamped transcript entry dates the
+# snapshot instead. Observed 2026-10-10: a resumed, never-prompted session dated
+# "now" re-stamped its stale 7d 25% on every refresh over the live 35%.
+# Empty or unreadable transcript (brand-new session): the snapshot in hand still
+# came from an API response just now, so it is dated now — not 0, which made
+# every new session lose to whatever the cache held.
 [ -n "$taken_at" ] || taken_at=$now
 used_tokens=${depth_tok:-$total_input}
 
