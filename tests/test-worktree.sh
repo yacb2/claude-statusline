@@ -176,5 +176,23 @@ want     "trunk follows origin/HEAD"           "$l2" "mm(master)"
 want_not "trunk itself is not in flight"       "$l2" "branch"
 want     "branches merged into master count"   "$l2" "2 merged"
 
+# ------------- 9. a *_ws workspace also lists its repos' git-native worktrees
+# Only "<ws>-wt-<slug>" siblings were read in workspace mode, so a plain
+# `git worktree add` of a sub-repo (aidex_ws/_tmp/wt/w7, 2026-10-14) never
+# showed, though the repo line already reads `git worktree list`. A convention
+# worktree is also a git-native one of its repo: it must be listed once.
+mkdir -p "$FIX/mix_ws/app"
+$GIT init -q "$FIX/mix_ws/app"
+$GIT -C "$FIX/mix_ws/app" commit -q --allow-empty -m init
+$GIT -C "$FIX/mix_ws/app" worktree add -q -b burn/w7 "$FIX/mix_ws/_tmp/wt/w7" >/dev/null 2>&1
+$GIT -C "$FIX/mix_ws/app" worktree add -q -b feat/conv "$FIX/mix_ws-wt-conv/app" >/dev/null 2>&1
+l3=$(line 3 "$FIX/mix_ws")
+want "workspace lists a git-native worktree of a sub-repo" "$l3" "w7"
+want "workspace still lists the convention worktree"       "$l3" "conv"
+case "$l3" in
+  *conv*conv*) bad "convention worktree listed once" "got: [$l3]" ;;
+  *) ok "convention worktree listed once" ;;
+esac
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

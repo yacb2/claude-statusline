@@ -27,7 +27,7 @@ Nothing to configure — the script reads the directory the session **started** 
 |---|---|---|
 | Anywhere inside a git repo (its root, a subdirectory, a linked worktree) | that repo | `git worktree list` of it, minus the main checkout — plain `git worktree add` and Claude Code's `.claude/worktrees/<name>` alike |
 | A folder that is not a repo but holds repos | one entry per immediate child repo | — |
-| Inside a `<name>_ws` folder (optional convention, see below) | the workspace repo and/or every child repo | sibling `<name>_ws-wt-<slug>` folders |
+| Inside a `<name>_ws` folder (optional convention, see below) | the workspace repo and/or every child repo | sibling `<name>_ws-wt-<slug>` folders, plus every rendered repo's own `git worktree list` (one already inside a sibling folder is listed once) |
 
 The `_ws` convention is for multi-repo workspaces: a folder `shop_ws/` holding `backend/` and `frontend/` as independent repos. A worktree there is a *sibling* folder `shop_ws-wt-<slug>/` with the same sub-repos, counted as one unit — its commits and changes are summed across sub-repos, and the roster is derived from folder names at zero git cost. If you do not name folders that way, the convention never triggers.
 

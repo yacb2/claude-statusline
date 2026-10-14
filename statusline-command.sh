@@ -301,6 +301,18 @@ trunk_of() {
   done
 }
 
+# Linked worktree paths of one `git worktree list --porcelain` output: every
+# paragraph but the first (the main checkout). A worktree whose directory was
+# deleted stays listed as "prunable" until `git worktree prune` and would
+# otherwise render as "<name> —", i.e. finished — skip it.
+linked_wts() {
+  printf '%s\n' "$1" | awk 'BEGIN { RS = "" } NR > 1 {
+    n = split($0, l, "\n"); keep = 1
+    for (i = 2; i <= n; i++) if (l[i] ~ /^prunable/) keep = 0
+    if (keep) print substr(l[1], 10) }'
+}
+ws_linked=""
+
 # Render one repo's status into git_display. Args: <label> <repo_path>
 render_repo() {
   label=$1
@@ -316,8 +328,11 @@ render_repo() {
     !/^#/              { c++ }
     END { print (b == "" || b == "(detached)" ? "detached" : b), a + 0, d + 0, c + 0 }')
   branch=${1:-detached}; ahead=${2:-0}; behind=${3:-0}; changes=${4:-0}
-  # Read once here; the worktree roster below reuses it for the rendered repo.
+  # Read once here; the worktree roster below reuses it for the rendered repo,
+  # and in a workspace collects every rendered repo's linked worktrees.
   wt_list=$(git -C "$repo" worktree list --porcelain 2>/dev/null)
+  ws_linked="$ws_linked$(linked_wts "$wt_list")
+"
 
   # Two branch counts against trunk (main, else master), and they answer
   # different questions:
@@ -447,15 +462,18 @@ if [ -n "$ws_root" ]; then
     wt_paths="$wt_paths${wt_dir%/}
 "
   done
+  # Plus the sub-repos' git-native worktrees (a plain `git worktree add`). One
+  # inside a "<ws>-wt-<slug>" wrapper is already listed above, by its wrapper.
+  while IFS= read -r p; do
+    case "$p" in ''|"$ws_parent/$base_ws"-wt-*) continue ;; esac
+    wt_paths="$wt_paths$p
+"
+  done <<EOF
+$ws_linked
+EOF
 elif [ -n "$repo_top" ]; then
-  # One paragraph per worktree; the first is the main checkout. A worktree whose
-  # directory was deleted stays listed as "prunable" until `git worktree prune`
-  # and would otherwise render as "<name> —", i.e. finished — skip it.
-  wt_paths=$(printf '%s\n' "$wt_list" \
-    | awk 'BEGIN { RS = "" } NR > 1 {
-        n = split($0, l, "\n"); keep = 1
-        for (i = 2; i <= n; i++) if (l[i] ~ /^prunable/) keep = 0
-        if (keep) print substr(l[1], 10) }')
+  # One paragraph per worktree; the first is the main checkout.
+  wt_paths=$(linked_wts "$wt_list")
   wt_cur=$repo_top   # matches an entry only when cwd is inside a linked worktree
 fi
 
