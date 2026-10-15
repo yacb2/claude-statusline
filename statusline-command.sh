@@ -128,10 +128,14 @@ fi
 # No real response in the tail: the latest timestamped transcript entry dates the
 # snapshot instead. Observed 2026-10-10: a resumed, never-prompted session dated
 # "now" re-stamped its stale 7d 25% on every refresh over the live 35%.
-# Empty or unreadable transcript (brand-new session): the snapshot in hand still
-# came from an API response just now, so it is dated now — not 0, which made
-# every new session lose to whatever the cache held.
-[ -n "$taken_at" ] || taken_at=$now
+# Missing, empty or unreadable transcript: dated 0, so the snapshot only fills an
+# empty or expired slot. It used to be dated now, on the theory that a brand-new
+# session's snapshot is fresh; but a session opened and never prompted keeps no
+# transcript file for hours, and on 2026-10-15 one re-stamped its morning 7d 9% as
+# "now" every refresh over the live 13%, so the line flapped 13 <-> 9. A new session
+# now defers to the cache until its first response, which is one turn
+# (tests/test-rate-limits.sh case 9).
+[ -n "$taken_at" ] || taken_at=0
 used_tokens=${depth_tok:-$total_input}
 
 if [ -n "$used_tokens" ] && [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ]; then

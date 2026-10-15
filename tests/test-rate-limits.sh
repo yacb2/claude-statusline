@@ -149,13 +149,22 @@ want_not "depth is not read as 0k"               "$out" "0k/"
 want     "taken_at ignores the API-error entry"  "$out" "7d 1%"
 : > "$TRANSCRIPT"
 
-# ------------------------------------ 9. a snapshot with no dated transcript is fresh
-# A brand-new session (no assistant entry yet) still holds a snapshot from its first
-# API response; dating it 0 made it lose to any cached window with a different
-# resets_at, which is the reset incident replayed on every new session.
-seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":29,\"resets_at\":$in_5d,\"taken_at\":$((now - 86400))}}}"
-out=$(run "{\"seven_day\":{\"used_percentage\":1,\"resets_at\":$in_16h}}")
-want "undated live snapshot wins over an older cached window" "$out" "7d 1%"
+# ------------------------------------ 9. a session with no transcript yet only fills an empty slot
+# Observed 2026-10-15: a recomed_ws session opened at 09:36 and never prompted had no
+# transcript file, and the old "undated -> now" re-stamped its morning 7d 9% on every
+# 60s refresh over the live 13%, so every status line flapped 13 <-> 9 for hours. A
+# brand-new session looks the same (no file until the first prompt), so it is dated 0
+# too: after an account-wide reset it shows the cached window until its first
+# response, one turn, instead of a stale value winning for as long as it stays open.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":13,\"resets_at\":$in_5d,\"taken_at\":$((now - 30))}}}"
+out=$(printf '{"workspace":{"current_dir":"%s"},"transcript_path":"%s/never-written.jsonl","rate_limits":{"seven_day":{"used_percentage":9,"resets_at":%s}}}' "$FIX" "$FIX" "$in_5d" \
+  | HOME="$FIX" sh "$SCRIPT" | sed -n '1p' | sed 's/\x1b\[[0-9;]*m//g')
+want "transcript-less snapshot loses to the live cache" "$out" "7d 13%"
+[ "$(cache_week)" = "13" ] && ok "cache keeps the live 7d" || bad "cache keeps the live 7d" "cache seven_day: $(cache_week)"
+seed '{}'
+out=$(printf '{"workspace":{"current_dir":"%s"},"transcript_path":"%s/never-written.jsonl","rate_limits":{"seven_day":{"used_percentage":9,"resets_at":%s}}}' "$FIX" "$FIX" "$in_5d" \
+  | HOME="$FIX" sh "$SCRIPT" | sed -n '1p' | sed 's/\x1b\[[0-9;]*m//g')
+want "transcript-less snapshot fills an empty cache" "$out" "7d 9%"
 
 # ------------------------------------ 10. non-scalar payload fields stay one word
 # The payload is read with one jq emitting @sh assignments for eval. @sh expands
