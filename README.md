@@ -52,12 +52,10 @@ This copies `statusline-command.sh` to `~/.claude/` and sets `statusLine` in `~/
 ## Tests
 
 ```bash
-sh tests/test-rate-limits.sh
-sh tests/test-worktree.sh
-sh tests/test-install.sh
+(for t in tests/test-*.sh; do sh "$t" || exit 1; done)
 ```
 
-Both are self-contained POSIX `sh`: fixtures are built in a temp dir and `HOME` is redirected, so they never read or write your real cache or settings.
+The suites are self-contained POSIX `sh`: fixtures are built in a temp dir and `HOME` is redirected, so they never read or write your real cache or settings.
 
 ## License
 

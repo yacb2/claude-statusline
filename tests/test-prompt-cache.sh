@@ -45,7 +45,7 @@ outc=$(run "{\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((now + 2550)),\"misse
 want "warm with time to spare is green" "$outc" "$(printf '\033[32m')cache 42m"
 
 # ------------------------------------ 2. warm but about to expire: yellow
-outc=$(run "{\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((now + 420)),\"misses\":0}" 1)
+outc=$(run "{\"warm\":true,\"ttl\":\"1h\",\"expires_at\":$((now + 450)),\"misses\":0}" 1)
 want "under 10m is yellow" "$outc" "$(printf '\033[33m')cache 7m"
 
 # ------------------------------------ 3. cold: what the next request re-caches

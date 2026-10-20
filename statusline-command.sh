@@ -72,9 +72,10 @@ depth_color() {
 # array into several quoted words, and `x='a' 'b'` would run b as a command.
 model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
 pc_present=""; pc_warm=""; pc_exp=""; pc_cold=""; pc_misses=""
+sid=""; pc_exp_iso=""; written_at=""
 eval "$(echo "$input" | jq -r '
   def s: if type == "string" then . elif type == "number" then tostring else tojson end;
-  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s)"
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s) sid=\(.session_id // "" | s) pc_exp_iso=\(.prompt_cache.expires_at | if type == "number" and . >= 0 and . < 100000000000 then floor | todate else "" end) written_at=\(now | floor | todate)"
 ' 2>/dev/null)"
 
 # --- Context window ---
@@ -180,6 +181,41 @@ if [ -n "$pc_present" ]; then
     esac
   fi
   case "$pc_misses" in ''|*[!0-9]*|0) ;; *) pc_display="$pc_display ${RED}m${pc_misses}${RESET}" ;; esac
+fi
+
+# --- Session snapshot ---
+# One small JSON per session for other processes (the command_center core) to
+# read: the session's real context window and prompt-cache state, which exist
+# nowhere but in this payload. Path ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/
+# statusline-sessions/<sid>.json, so each account keeps its own directory.
+# `session_id` is documented in the statusline payload; when it is absent the
+# transcript basename is the same id. The id becomes a file name, so anything
+# outside [0-9A-Za-z-] writes nothing (no `/`, no `..`). Reuses the fields the
+# single jq above already parsed: no extra process, one mkdir only when the
+# directory is missing, one mv per render. Same atomic tmp+mv as the quota cache:
+# several renders of one session can overlap. Never infer the window from the
+# model name (the "[1m]" suffix is stripped above); only context_window_size.
+# A window of 0 (or with a leading zero) writes nothing: the reader divides by it.
+# expires_at outside [0, 1e11) seconds (a millisecond epoch, 1e20) becomes "" so
+# `todate` cannot fail and blank the whole render.
+if [ -z "$sid" ] && [ -n "$transcript_p" ]; then
+  sid=${transcript_p##*/}; sid=${sid%.jsonl}
+fi
+case "$sid" in ''|*[!0-9A-Za-z-]*) sid="" ;; esac
+case "$ctx_size" in ''|*[!0-9]*|0*) sid="" ;; esac
+if [ -n "$sid" ]; then
+  snap_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-sessions"
+  snap_pc=null
+  if [ -n "$pc_present" ]; then
+    [ "$pc_warm" = "true" ] || pc_warm=false
+    case "$pc_cold" in ''|*[!0-9]*) pc_cold=0 ;; esac
+    case "$pc_misses" in ''|*[!0-9]*) pc_misses=0 ;; esac
+    snap_pc="{\"warm\":$pc_warm,\"expires_at\":\"$pc_exp_iso\",\"recache_tokens_if_cold\":$pc_cold,\"misses\":$pc_misses}"
+  fi
+  [ -d "$snap_dir" ] || mkdir -p "$snap_dir" 2>/dev/null
+  printf '{"session_id":"%s","written_at":"%s","context_window_size":%s,"prompt_cache":%s}\n' \
+    "$sid" "$written_at" "$ctx_size" "$snap_pc" > "$snap_dir/$sid.json.tmp.$$" \
+    && mv -f "$snap_dir/$sid.json.tmp.$$" "$snap_dir/$sid.json"
 fi
 
 # --- Settings: effort + advisor ---
