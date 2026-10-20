@@ -143,7 +143,7 @@ want "plain worktree cwd shows its branch"   "$(line 2 "$FIX/plain-x")" "feat/x"
 # ------------------------ 6. no convention: nested cwd + git-native worktrees
 want "nested cwd renders the enclosing repo"  "$(line 2 "$FIX/plain/src")" "plain(main)"
 want "main checkout lists git worktrees"      "$(line 3 "$FIX/plain")"     "plain-x"
-want "git worktree shows commits ahead"       "$(line 3 "$FIX/plain")"     "plain-x +1"
+want "git worktree shows commits ahead"       "$(line 3 "$FIX/plain")"     "plain-x(feat/x) +1"
 raw=$(run "$FIX/plain-x" | sed -n '3p')
 if printf '%s' "$raw" | grep -q "$(printf '\033')\[1m$(printf '\033')\[35mplain-x"; then
   ok "active git worktree is bold+magenta"
@@ -190,9 +190,32 @@ l3=$(line 3 "$FIX/mix_ws")
 want "workspace lists a git-native worktree of a sub-repo" "$l3" "w7"
 want "workspace still lists the convention worktree"       "$l3" "conv"
 case "$l3" in
-  *conv*conv*) bad "convention worktree listed once" "got: [$l3]" ;;
+  *"conv("*"conv("*) bad "convention worktree listed once" "got: [$l3]" ;;
   *) ok "convention worktree listed once" ;;
 esac
+
+# ---------- 10. a workspace worktree shows its branch(es) after the name
+# One branch when every sub-repo agrees; repo:branch per sub-repo otherwise;
+# a sub-repo on a detached HEAD reads "detached".
+mkbr() { # <ws> : two sub-repos with a sibling worktree <ws>-wt-s
+  for r in ra rb; do
+    mkdir -p "$FIX/$1/$r"
+    $GIT init -q "$FIX/$1/$r"
+    $GIT -C "$FIX/$1/$r" commit -q --allow-empty -m init
+  done
+}
+mkbr same_ws
+for r in ra rb; do $GIT -C "$FIX/same_ws/$r" worktree add -q -b feat/one "$FIX/same_ws-wt-s/$r" >/dev/null 2>&1; done
+mkbr diff_ws
+$GIT -C "$FIX/diff_ws/ra" worktree add -q -b feat/one "$FIX/diff_ws-wt-s/ra" >/dev/null 2>&1
+$GIT -C "$FIX/diff_ws/rb" worktree add -q -b feat/two "$FIX/diff_ws-wt-s/rb" >/dev/null 2>&1
+mkbr det_ws
+$GIT -C "$FIX/det_ws/ra" worktree add -q -b feat/one "$FIX/det_ws-wt-s/ra" >/dev/null 2>&1
+$GIT -C "$FIX/det_ws/rb" worktree add -q --detach "$FIX/det_ws-wt-s/rb" >/dev/null 2>&1
+want "agreeing sub-repos show the branch once" "$(line 3 "$FIX/same_ws")" "s(feat/one)"
+want_not "agreeing sub-repos do not repeat repo names" "$(line 3 "$FIX/same_ws")" "ra:"
+want "differing sub-repos show repo:branch each" "$(line 3 "$FIX/diff_ws")" "(ra:feat/one, rb:feat/two)"
+want "a detached sub-repo reads detached" "$(line 3 "$FIX/det_ws")" "(ra:feat/one, rb:detached)"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

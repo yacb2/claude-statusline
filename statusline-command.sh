@@ -492,9 +492,14 @@ if [ -n "$wt_paths" ]; then
   wt_stats() {
     wt_ahead=0
     wt_dirty=0
+    wt_branches=""
     if [ -e "$1/.git" ]; then set -- "$1"; else set -- "$1"/*/; fi
     for _s in "$@"; do
       [ -e "$_s/.git" ] || continue
+      # "repo:branch" per sub-repo; wt_entry collapses them when they agree.
+      _r=${_s%/}; _r=${_r##*/}
+      _b=$(git -C "$_s" branch --show-current 2>/dev/null)
+      wt_branches="$wt_branches $_r:${_b:-detached}"
       _t=$(trunk_of "$_s")
       _a=0
       [ -n "$_t" ] && _a=$(git -C "$_s" rev-list --count "$_t..HEAD" 2>/dev/null)
@@ -510,7 +515,15 @@ if [ -n "$wt_paths" ]; then
   wt_entry() {
     wt_stats "$1"
     _name=${1##*/}; _name=${_name#*-wt-}
+    # Branch after the name: one when every sub-repo agrees, else repo:branch each.
+    # IFS is newline-only here, so split the space-separated tokens with tr.
+    _bl=$(printf '%s\n' "$wt_branches" | tr ' ' '\n' | sed '/^$/d; s/^[^:]*://' | sort -u)
+    case "$_bl" in
+      *"
+"*) _bl=$(printf '%s' "${wt_branches# }" | sed 's/ /, /g') ;;
+    esac
     _out="$2${_name}${RESET}"
+    [ -n "$_bl" ] && _out="${_out}${DIM}(${RESET}${MAGENTA}${_bl}${RESET}${DIM})${RESET}"
     [ "$wt_ahead" -gt 0 ] && _out="${_out} ${CYAN}+${wt_ahead}${RESET}"
     [ "$wt_dirty" -gt 0 ] && _out="${_out} ${YELLOW}${wt_dirty}✱${RESET}"
     [ "$wt_ahead" -eq 0 ] && [ "$wt_dirty" -eq 0 ] && _out="${_out} ${DIM}—${RESET}"
