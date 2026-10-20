@@ -201,5 +201,19 @@ want "response-less session loses to the live snapshot" "$out" "7d 35%"
 [ "$(cache_week)" = "35" ] && ok "cache keeps the live 7d" || bad "cache keeps the live 7d" "cache seven_day: $(cache_week)"
 : > "$TRANSCRIPT"
 
+# ------------------------------------ 13. each config dir keeps its own cache
+# Two accounts (CLAUDE_CONFIG_DIR) share one script; with a hardcoded ~/.claude path a
+# company session's quota overwrote the personal cache. The cache follows the config dir.
+seed "{\"rate_limits\":{\"seven_day\":{\"used_percentage\":35,\"resets_at\":$in_5d,\"taken_at\":$((now - 60))}}}"
+mkdir -p "$FIX/work"
+# Dated after the seed, so in a shared cache this snapshot would win.
+printf '{"type":"assistant","timestamp":%s,"message":{"usage":{"input_tokens":2000}}}\n' "$(iso "$((now - 10))")" > "$TRANSCRIPT"
+printf '{"rate_limits":{"seven_day":{"used_percentage":77,"resets_at":%s}},"transcript_path":"%s"}' "$in_5d" "$TRANSCRIPT" \
+  | HOME="$FIX" CLAUDE_CONFIG_DIR="$FIX/work" sh "$SCRIPT" >/dev/null 2>&1
+[ "$(cache_week)" = "35" ] && ok "personal cache untouched by another config dir" || bad "personal cache untouched by another config dir" "cache seven_day: $(cache_week)"
+w=$(jq -r '.rate_limits.seven_day.used_percentage // empty' "$FIX/work/rate-limits-cache.json" 2>/dev/null)
+[ "$w" = "77" ] && ok "config dir gets its own cache" || bad "config dir gets its own cache" "work seven_day: [$w]"
+: > "$TRANSCRIPT"
+
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]

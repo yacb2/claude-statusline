@@ -185,7 +185,7 @@ fi
 # --- Settings: effort + advisor ---
 # Effort now ships live in the status input (.effort.level); prefer it over the
 # possibly-stale settings.json value. Advisor model still comes from settings.json.
-settings_file="$HOME/.claude/settings.json"
+settings_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 effort_cfg="—"; advisor="—"
 [ -f "$settings_file" ] \
   && eval "$(jq -r 'def s: if type == "string" then . else tojson end;
@@ -235,7 +235,8 @@ fmt_left() {
 #   Liveness is decided BEFORE the tie-break: an expired cached window with a
 #     later taken_at once beat the live one and emptied the slot ("5h —" while
 #     the session held data), flapping as sessions alternated renders.
-rl_cache="$HOME/.claude/rate-limits-cache.json"
+# Per config dir: each account (CLAUDE_CONFIG_DIR) keeps its own quota cache.
+rl_cache="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/rate-limits-cache.json"
 cached="{}"
 [ -f "$rl_cache" ] && cached=$(jq -c '.rate_limits // {}' "$rl_cache" 2>/dev/null)
 [ -n "$cached" ] || cached="{}"
