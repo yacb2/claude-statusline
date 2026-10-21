@@ -72,10 +72,10 @@ depth_color() {
 # array into several quoted words, and `x='a' 'b'` would run b as a command.
 model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
 pc_present=""; pc_warm=""; pc_exp=""; pc_cold=""; pc_misses=""
-sid=""; pc_exp_iso=""; written_at=""
+sid=""; pc_exp_iso=""; written_at=""; snap_model=null
 eval "$(echo "$input" | jq -r '
   def s: if type == "string" then . elif type == "number" then tostring else tojson end;
-  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s) sid=\(.session_id // "" | s) pc_exp_iso=\(.prompt_cache.expires_at | if type == "number" and . >= 0 and . < 100000000000 then floor | todate else "" end) written_at=\(now | floor | todate)"
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s) sid=\(.session_id // "" | s) pc_exp_iso=\(.prompt_cache.expires_at | if type == "number" and . >= 0 and . < 100000000000 then floor | todate else "" end) written_at=\(now | floor | todate) snap_model=\(.model.id | if type == "string" and . != "" then tojson else "null" end)"
 ' 2>/dev/null)"
 
 # --- Context window ---
@@ -198,6 +198,10 @@ fi
 # A window of 0 (or with a leading zero) writes nothing: the reader divides by it.
 # expires_at outside [0, 1e11) seconds (a millisecond epoch, 1e20) becomes "" so
 # `todate` cannot fail and blank the whole render.
+# `model` is the payload's .model.id as is (not the display name, not stripped),
+# already JSON-encoded by the jq above (tojson), so a quote cannot break the file;
+# absent, empty or not a string -> null. The core falls back to it when no
+# SessionStart hook carried a model (resumed sessions mostly do not).
 if [ -z "$sid" ] && [ -n "$transcript_p" ]; then
   sid=${transcript_p##*/}; sid=${sid%.jsonl}
 fi
@@ -213,8 +217,8 @@ if [ -n "$sid" ]; then
     snap_pc="{\"warm\":$pc_warm,\"expires_at\":\"$pc_exp_iso\",\"recache_tokens_if_cold\":$pc_cold,\"misses\":$pc_misses}"
   fi
   [ -d "$snap_dir" ] || mkdir -p "$snap_dir" 2>/dev/null
-  printf '{"session_id":"%s","written_at":"%s","context_window_size":%s,"prompt_cache":%s}\n' \
-    "$sid" "$written_at" "$ctx_size" "$snap_pc" > "$snap_dir/$sid.json.tmp.$$" \
+  printf '{"session_id":"%s","written_at":"%s","context_window_size":%s,"prompt_cache":%s,"model":%s}\n' \
+    "$sid" "$written_at" "$ctx_size" "$snap_pc" "$snap_model" > "$snap_dir/$sid.json.tmp.$$" \
     && mv -f "$snap_dir/$sid.json.tmp.$$" "$snap_dir/$sid.json"
   # Daily prune: nothing else deletes these files. The stamp is touched first so
   # overlapping renders do not all prune; a stamp younger than a day skips the find.

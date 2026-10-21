@@ -6,7 +6,8 @@
 # window and prompt-cache state. Contract:
 #   { "session_id": str, "written_at": ISO-8601 UTC, "context_window_size": number,
 #     "prompt_cache": null | { "warm": bool, "expires_at": str,
-#                              "recache_tokens_if_cold": number, "misses": number } }
+#                              "recache_tokens_if_cold": number, "misses": number },
+#     "model": null | str }   (the payload's .model.id as is; null when absent, empty or not a string)
 #   sid is only [0-9A-Za-z-]; anything else writes nothing. The id comes from
 #   `session_id`, else from the transcript_path basename without ".jsonl".
 #   Written atomically (tmp + mv); nothing is written without a sid and a window.
@@ -29,7 +30,7 @@ eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$3], got [$2]
 render() { printf '%s' "$1" | HOME="$FIX" sh "$SCRIPT" >/dev/null 2>&1; }
 # Payload builder: $1 = extra top-level JSON members (leading comma included).
 payload() {
-  printf '{"model":{"display_name":"Claude Opus 4.8"},"workspace":{"current_dir":"%s"},"context_window":{"total_input_tokens":120000,"context_window_size":1000000}%s}' "$FIX" "$1"
+  printf '{"model":{"id":"claude-opus-4-8[1m]","display_name":"Claude Opus 4.8"},"workspace":{"current_dir":"%s"},"context_window":{"total_input_tokens":120000,"context_window_size":1000000}%s}' "$FIX" "$1"
 }
 fresh() { rm -rf "$SNAP"; }
 files() { ls "$SNAP" 2>/dev/null | tr '\n' ' '; }
@@ -48,6 +49,23 @@ eq "prompt_cache.warm"                 "$(jq -r .prompt_cache.warm "$f")" "true"
 eq "prompt_cache.expires_at is ISO"    "$(jq -r .prompt_cache.expires_at "$f")" "2026-09-04T09:24:04Z"
 eq "prompt_cache.recache_tokens_if_cold" "$(jq -r .prompt_cache.recache_tokens_if_cold "$f")" "45000"
 eq "prompt_cache.misses"               "$(jq -r .prompt_cache.misses "$f")" "2"
+eq "model is the payload's model id, unstripped" "$(jq -r .model "$f")" "claude-opus-4-8[1m]"
+
+# model: no id, an empty or non-string id is null; an id with a quote or a printf
+# directive (%s: printed as an argument, never as the format) cannot break the file (it goes into printf JSON) and round-trips as is.
+for row in 'absent|{"display_name":"Claude Opus 4.8"}|null' \
+           'empty|{"id":""}|null' \
+           'number|{"id":42}|null' \
+           'no model object|null|null' \
+           'quote|{"id":"claude-\"x"}|"claude-\"x"' \
+           'percent|{"id":"a%sb"}|"a%sb"'; do
+  name=${row%%|*}; rest=${row#*|}; model_in=${rest%|*}; want=${rest##*|}
+  fresh
+  render "{\"session_id\":\"mod\",\"model\":$model_in,\"context_window\":{\"context_window_size\":200000}}"
+  eq "model [$name]: file is valid JSON" "$(jq -e 'type == "object"' "$SNAP/mod.json" 2>/dev/null)" "true"
+  eq "model [$name]: value"              "$(jq -c .model "$SNAP/mod.json" 2>/dev/null)" "$want"
+  eq "model [$name]: window still written" "$(jq -r .context_window_size "$SNAP/mod.json" 2>/dev/null)" "200000"
+done
 
 # ------------------------------------ 2. cold cache: warm false, no expiry
 fresh
