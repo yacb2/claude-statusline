@@ -216,6 +216,13 @@ if [ -n "$sid" ]; then
   printf '{"session_id":"%s","written_at":"%s","context_window_size":%s,"prompt_cache":%s}\n' \
     "$sid" "$written_at" "$ctx_size" "$snap_pc" > "$snap_dir/$sid.json.tmp.$$" \
     && mv -f "$snap_dir/$sid.json.tmp.$$" "$snap_dir/$sid.json"
+  # Daily prune: nothing else deletes these files. The stamp is touched first so
+  # overlapping renders do not all prune; a stamp younger than a day skips the find.
+  # One stat per render, one find per day; failures are silenced, never the render's.
+  if [ -d "$snap_dir" ] && [ -z "$(find "$snap_dir/.pruned" -mtime -1 2>/dev/null)" ]; then
+    touch "$snap_dir/.pruned" 2>/dev/null
+    find "$snap_dir" -maxdepth 1 -type f \( -name '*.json' -o -name '*.tmp.*' \) -mtime +7 -delete 2>/dev/null
+  fi
 fi
 
 # --- Settings: effort + advisor ---

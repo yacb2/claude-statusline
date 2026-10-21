@@ -32,7 +32,7 @@ payload() {
   printf '{"model":{"display_name":"Claude Opus 4.8"},"workspace":{"current_dir":"%s"},"context_window":{"total_input_tokens":120000,"context_window_size":1000000}%s}' "$FIX" "$1"
 }
 fresh() { rm -rf "$SNAP"; }
-files() { ls -A "$SNAP" 2>/dev/null | tr '\n' ' '; }
+files() { ls "$SNAP" 2>/dev/null | tr '\n' ' '; }
 
 # ------------------------------------ 1. fields written
 fresh
@@ -117,7 +117,7 @@ eq "session_id outranks the transcript basename" "$(files)" "real.json "
 fresh
 render "$(payload ',"session_id":"atom"')"
 render "$(payload ',"session_id":"atom"')"
-eq "no .tmp file is left behind" "$(ls -A "$SNAP")" "atom.json"
+eq "no .tmp file is left behind" "$(ls "$SNAP")" "atom.json"
 
 # ------------------------------------ 8. the account's own config dir
 fresh
@@ -125,6 +125,39 @@ mkdir -p "$FIX/work"
 payload ',"session_id":"acct"' | HOME="$FIX" CLAUDE_CONFIG_DIR="$FIX/work" sh "$SCRIPT" >/dev/null 2>&1
 eq "CLAUDE_CONFIG_DIR gets the file"  "$(ls "$FIX/work/statusline-sessions" 2>/dev/null)" "acct.json"
 eq "the default dir stays empty"      "$(files)" ""
+
+# ------------------------------------ 9. daily prune of old snapshot files
+# Files older than 7 days (*.json, *.tmp.*) go, at most once a day (stamp .pruned).
+OLD=202001010000
+age() { touch -t "$OLD" "$SNAP/$1"; }
+fresh; mkdir -p "$SNAP"
+for n in old.json old.json.tmp.1 new.json new.json.tmp.2 keep.txt; do printf x > "$SNAP/$n"; done
+age old.json; age old.json.tmp.1; age keep.txt
+render "$(payload ',"session_id":"cur"')"
+eq "prune: old json and tmp go, fresh stay, other names stay" "$(files)" "cur.json keep.txt new.json new.json.tmp.2 "
+eq "prune: stamp file is left behind" "$([ -f "$SNAP/.pruned" ] && echo yes || echo no)" "yes"
+
+# a second render within the day does not prune
+printf x > "$SNAP/late.json"; age late.json
+render "$(payload ',"session_id":"cur"')"
+eq "prune: second render within a day keeps a newly aged file" "$([ -f "$SNAP/late.json" ] && echo yes || echo no)" "yes"
+
+# a stamp older than a day lets the next render prune again
+touch -t "$OLD" "$SNAP/.pruned"
+render "$(payload ',"session_id":"cur"')"
+eq "prune: stale stamp prunes again" "$([ -f "$SNAP/late.json" ] && echo yes || echo no)" "no"
+
+# a file just inside the 7 day window survives
+fresh; mkdir -p "$SNAP"; printf x > "$SNAP/edge.json"
+touch -t "$(date -v-6d +%Y%m%d%H%M 2>/dev/null || date -d '6 days ago' +%Y%m%d%H%M)" "$SNAP/edge.json"
+render "$(payload ',"session_id":"cur"')"
+eq "prune: 6 day old file survives" "$([ -f "$SNAP/edge.json" ] && echo yes || echo no)" "yes"
+
+# a render with no snapshot dir and nothing to write still renders
+fresh
+out=$(payload '' | HOME="$FIX" sh "$SCRIPT" 2>/dev/null)
+case "$out" in *"Opus 4.8"*) ok "prune: missing dir does not break the render" ;; *) bad "prune: missing dir does not break the render" "got [$out]" ;; esac
+eq "prune: missing dir is not created by the prune" "$([ -d "$SNAP" ] && echo yes || echo no)" "no"
 
 printf '\n%s\n' "$([ "$fails" -eq 0 ] && echo 'ALL PASS' || echo "$fails FAILED")"
 [ "$fails" -eq 0 ]
