@@ -205,7 +205,8 @@ fi
 if [ -z "$sid" ] && [ -n "$transcript_p" ]; then
   sid=${transcript_p##*/}; sid=${sid%.jsonl}
 fi
-case "$sid" in ''|*[!0-9A-Za-z-]*) sid="" ;; esac
+# Letters spelled out: under a UTF-8 locale /bin/sh puts é inside A-Za-z.
+case "$sid" in ''|*[!0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-]*) sid="" ;; esac
 case "$ctx_size" in ''|*[!0-9]*|0*) sid="" ;; esac
 if [ -n "$sid" ]; then
   snap_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-sessions"

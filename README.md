@@ -38,6 +38,10 @@ Claude Code hands each session its own `rate_limits` snapshot, taken at that ses
 
 The script keeps one account-wide cache per config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}/rate-limits-cache.json`, so two accounts never mix) and merges **per window, from the data itself**: same `resets_at` → higher `used_percentage` wins (usage is cumulative); expired → dropped; two live windows with different `resets_at` → the snapshot taken later wins, dated by the last real assistant response in the session's transcript (API-error entries are skipped). A natural rollover never yields two live windows, so that case means the server replaced one — and `resets_at` order says nothing then: the 2026-09-01 account-wide reset produced an *earlier* `resets_at`. A session with no transcript yet (opened, never prompted) is dated 0, so its snapshot only fills an empty slot. The transcript mtime is never used, so an idle session cannot publish a stale snapshot over a live one.
 
+### Weekly history
+
+Once per weekly cycle the script appends one line to `${CLAUDE_CONFIG_DIR:-~/.claude}/aidex/quota-history.jsonl` (`seen_at`, `resets_at`, `used_percentage`, and `prev_used_percentage`: the closing % of the cycle before, taken from `quota-current.json`, which holds the last % seen). Nothing reads it at render time; it is raw data for looking back at how much of each week was used, which the cache above cannot answer because it keeps only the current window.
+
 ## Install
 
 Requires `jq` and `git` (POSIX `sh`; macOS or Linux).
