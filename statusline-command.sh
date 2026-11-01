@@ -312,6 +312,43 @@ if [ "$merged" != "$cached" ]; then
   printf '{"rate_limits":%s}\n' "$merged" > "$rl_cache.tmp.$$" \
     && mv -f "$rl_cache.tmp.$$" "$rl_cache"
 fi
+# --- Weekly-quota history ---
+# One line per weekly cycle in quota-history.jsonl, written when the merged
+# seven_day.resets_at is not yet in it. quota-current.json holds the last % seen,
+# so the new line carries the previous cycle's closing %. Plain sh, no extra jq:
+# the render must stay fast and never fail. Concurrent renders: a mkdir lock
+# makes read+append one step; a render that finds it held skips the block. A
+# non-integer resets_at skips this block (sh arithmetic would
+# blank the whole render).
+wk_ok=""
+case "$week_reset" in ''|*[!0-9]*) ;; *) [ -n "$week" ] && wk_ok=1 ;; esac
+if [ -n "$wk_ok" ]; then
+  qdir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/aidex"
+  qhist="$qdir/quota-history.jsonl"
+  qcur="$qdir/quota-current.json"
+  # A render killed while holding the lock would stop history for good: drop a lock older than 1 min.
+  # A render killed between the tmp write and the mv leaves the tmp: same age rule.
+  find "$qdir" -maxdepth 1 -name .qlock -mmin +1 -exec rmdir {} + 2>/dev/null
+  find "$qdir" -maxdepth 1 -name 'quota-current.json.tmp.*' -mmin +1 -delete 2>/dev/null
+  if mkdir -p "$qdir" 2>/dev/null && mkdir "$qdir/.qlock" 2>/dev/null; then
+    if ! { [ -f "$qhist" ] && grep -q "\"resets_at\":$week_reset[,}]" "$qhist"; } 2>/dev/null; then
+      prev=""
+      curjson=""
+      [ -f "$qcur" ] && curjson=$(cat "$qcur" 2>/dev/null)
+      if [ -n "$curjson" ]; then
+        cur_reset=$(printf '%s' "$curjson" | sed -n 's/.*"resets_at":\([0-9]*\).*/\1/p')
+        cur_pct=$(printf '%s' "$curjson" | sed -n 's/.*"used_percentage":\([0-9.]*\).*/\1/p')
+        [ -n "$cur_pct" ] && [ "$cur_reset" != "$week_reset" ] && prev=",\"prev_used_percentage\":$cur_pct"
+      fi
+      { printf '{"seen_at":"%s","resets_at":%s,"used_percentage":%s%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$week_reset" "$week" "$prev" >> "$qhist"; } 2>/dev/null
+    fi
+    { printf '{"resets_at":%s,"used_percentage":%s}\n' "$week_reset" "$week" > "$qcur.tmp.$$" \
+      && mv -f "$qcur.tmp.$$" "$qcur"; } 2>/dev/null
+    rmdir "$qdir/.qlock" 2>/dev/null
+  fi
+fi
+
 # Both slots always render, so the line keeps one shape: "5h —" says "no live
 # data for this window", which is a different fact from a window that is missing.
 if [ -n "$five" ]; then
@@ -333,7 +370,7 @@ else
 fi
 
 # --- Git: per-repo changes in workspace ---
-# Detects sub-repos under the workspace root (cwd or nearest *_ws ancestor)
+# Detects sub-repos under the workspace root (cwd or nearest *_ws or *-ws ancestor)
 # and shows compact change/ahead counters per repo. Skips repos with no activity.
 git_display=""
 ws_root=""
@@ -463,8 +500,9 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   # path of ordinary depth, measured 20 ms against under 1 ms.
   while [ "$search" != "/" ] && [ "$search" != "" ]; do
     case "${search##*/}" in
-      # *_ws-wt-<slug> is the worktree wrapper sibling of a *_ws workspace.
-      *_ws|*_ws-wt-*) ws_root="$search" ;;
+      # *_ws-wt-<slug> is the worktree wrapper sibling of a *_ws workspace. The
+      # hyphen spelling (shop-web-ws) is the same convention.
+      *_ws|*_ws-wt-*|*-ws|*-ws-wt-*) ws_root="$search" ;;
     esac
     search=${search%/*}
   done

@@ -39,6 +39,8 @@ PARENT="$FIX/projects"
 mkrepo "$PARENT/mine_ws/mineapp"
 mkrepo "$PARENT/other_ws/otherapp"
 mkrepo "$PARENT/loose-repo"
+mkrepo "$PARENT/shop-web-ws/api"
+mkrepo "$PARENT/shop-web-ws/web"
 
 # <current_dir> [project_dir]
 run() {
@@ -58,6 +60,12 @@ want_not "cd into another repo does not render it"           "$out" "otherapp"
 
 out=$(run "$PARENT/loose-repo")
 want "no project_dir falls back to current_dir" "$out" "loose-repo"
+
+# The hyphen spelling of the workspace convention: the root is the -ws dir, so both
+# sub-repos render, not only the one the session sits in.
+out=$(run "$PARENT/shop-web-ws/api" "$PARENT/shop-web-ws/api")
+want "a -ws workspace renders its first sub-repo"  "$out" "api("
+want "a -ws workspace renders its sibling sub-repo" "$out" "web("
 
 [ "$fails" -eq 0 ] && { echo; echo "ALL PASS"; exit 0; }
 echo; echo "$fails FAILED"; exit 1
