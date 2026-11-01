@@ -10,8 +10,10 @@ SETTINGS="$HOME/.claude/settings.json"
 command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq / apt install jq)"; exit 1; }
 
 mkdir -p "$HOME/.claude"
-cp "$HERE/statusline-command.sh" "$DEST"
-chmod +x "$DEST"
+# tmp + mv: a render in flight keeps reading the old file instead of a half-copied one.
+cp "$HERE/statusline-command.sh" "$DEST.tmp.$$"
+chmod +x "$DEST.tmp.$$"
+mv -f "$DEST.tmp.$$" "$DEST"
 echo "installed  $DEST"
 
 want='{"type":"command","command":"~/.claude/statusline-command.sh","refreshInterval":60}'

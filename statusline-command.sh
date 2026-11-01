@@ -646,7 +646,25 @@ fi
 # Line 1: model · used/total · prompt cache · effort/advisor · rate limits
 # Note: Claude Code auto-appends "(1M context)" or equivalent after the model name,
 # so we don't add our own context-size tag here.
-model_part="${BOLD}${model}${RESET}"
+# Account tag: who is logged in, from <config dir>/.claude.json (no credentials
+# there, only the profile). W when the email is listed, one per line, in
+# ${XDG_CONFIG_HOME:-~/.config}/claude-statusline/work-accounts; else P plus the
+# display name's initial, so two people sharing one machine and one config dir
+# can tell their accounts apart (P·Z vs P·Y). No logged-in profile: no tag.
+# Without CLAUDE_CONFIG_DIR the file is ~/.claude.json, not ~/.claude/.claude.json.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then acct_file="$CLAUDE_CONFIG_DIR/.claude.json"
+else acct_file="$HOME/.claude.json"; fi
+acct=""; acct_email=""; acct_init=""
+[ -f "$acct_file" ] && eval "$(jq -r '.oauthAccount // {} | @sh "acct_email=\(.emailAddress // "" | tostring | ascii_downcase) acct_init=\([.displayName, .emailAddress] | map(select(type == "string" and . != "")) | (.[0] // "") | .[0:1] | ascii_upcase)"' "$acct_file" 2>/dev/null)"
+if [ -n "$acct_email" ]; then
+  work_list="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/work-accounts"
+  if [ -f "$work_list" ] && tr -d ' \r' < "$work_list" | tr 'A-Z' 'a-z' | grep -qxF -- "$acct_email"; then
+    acct="${BOLD}${CYAN}W${RESET} "
+  else
+    acct="${BOLD}${MAGENTA}P${RESET}${MAGENTA}${acct_init:+·$acct_init}${RESET} "
+  fi
+fi
+model_part="${acct}${BOLD}${model}${RESET}"
 cfg_part="${GRAY}${effort}/${advisor}${RESET}"
 line1="${model_part}${SEP}${ctx_display}${SEP}${pc_display:+${pc_display}${SEP}}${cfg_part}${SEP}${rl}"
 printf "%s\n" "$line1"
