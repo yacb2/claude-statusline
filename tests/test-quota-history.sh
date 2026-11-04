@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Tests for the weekly-quota history the status line keeps.
 #
 # Contract, under ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/aidex/:

@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for the per-session snapshot the status line writes.
 #
 # Each render writes ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-sessions/<sid>.json

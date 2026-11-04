@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for install.sh. HOME is redirected to a fixture dir, so the
 # real ~/.claude is never touched.
 #

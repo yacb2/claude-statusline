@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Tests for the account tag at the head of line 1.
 #
 # Contract: the profile in <config dir>/.claude.json (~/.claude.json without

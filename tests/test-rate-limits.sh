@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for the cross-session rate-limit cache in statusline-command.sh.
 #
 # Claude Code hands each session ITS OWN snapshot of rate_limits, taken at that

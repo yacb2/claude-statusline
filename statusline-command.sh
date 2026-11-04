@@ -70,12 +70,12 @@ depth_color() {
 # -> "Opus 4.7". Defaults first, so malformed stdin degrades to placeholders.
 # Every interpolation goes through `s`, which makes it ONE string: @sh expands an
 # array into several quoted words, and `x='a' 'b'` would run b as a command.
-model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; rate_limits="{}"
+model="Claude"; transcript_p=""; total_input=""; ctx_size=""; effort=""; cwd=""; cur_dir=""; rate_limits="{}"
 pc_present=""; pc_warm=""; pc_exp=""; pc_cold=""; pc_misses=""
 sid=""; pc_exp_iso=""; written_at=""; snap_model=null
 eval "$(echo "$input" | jq -r '
   def s: if type == "string" then . elif type == "number" then tostring else tojson end;
-  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s) sid=\(.session_id // "" | s) pc_exp_iso=\(.prompt_cache.expires_at | if type == "number" and . >= 0 and . < 100000000000 then floor | todate else "" end) written_at=\(now | floor | todate) snap_model=\(.model.id | if type == "string" and . != "" then tojson else "null" end)"
+  @sh "model=\((.model.display_name // "Claude") | s | sub("^Claude "; "") | sub(" \\([0-9]+[MmKk] context\\)$"; "")) transcript_p=\(.transcript_path // "" | s) total_input=\(.context_window.total_input_tokens // "" | s) ctx_size=\(.context_window.context_window_size // "" | s) effort=\(.effort.level // "" | s) cwd=\(.workspace.project_dir // .workspace.current_dir // "" | s) cur_dir=\(.workspace.current_dir // "" | s) rate_limits=\(.rate_limits // {} | tojson) pc_present=\(if .prompt_cache == null then "" else "1" end) pc_warm=\(.prompt_cache.warm // false | s) pc_exp=\(.prompt_cache.expires_at // "" | s) pc_cold=\(.prompt_cache.recache_tokens_if_cold // "" | s) pc_misses=\(.prompt_cache.misses // 0 | s) sid=\(.session_id // "" | s) pc_exp_iso=\(.prompt_cache.expires_at | if type == "number" and . >= 0 and . < 100000000000 then floor | todate else "" end) written_at=\(now | floor | todate) snap_model=\(.model.id | if type == "string" and . != "" then tojson else "null" end)"
 ' 2>/dev/null)"
 
 # --- Context window ---
@@ -104,12 +104,20 @@ eval "$(echo "$input" | jq -r '
 now=$(date +%s)
 depth_tok=""
 taken_at=""
+sl_title=""
+nl='
+'
 if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
-  set -- $(tail -n 400 "$transcript_p" 2>/dev/null | jq -Rs -r '
+  # The same pass reads the session title (the last custom-title entry the tail holds,
+  # whitespace collapsed to one line) for the extension hook: no extra process. It
+  # follows the depth line after a "T:" marker.
+  tr_out=$(tail -n 400 "$transcript_p" 2>/dev/null | jq -Rs -r '
     def ts: (.timestamp // "" | strings | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0;
     [ split("\n")[] | fromjson? ] as $e
     | ([ $e[] | ts ] | max // 0) as $latest
-    | [ $e[] | select(.type == "assistant")
+    | ([ $e[] | select(.type == "custom-title") | .customTitle | strings ] | last // ""
+       | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "")) as $title
+    | ( [ $e[] | select(.type == "assistant")
       | (.message.usage // null) as $u | select($u != null)
       | { t: ts,
           d: (if (($u.iterations // []) | length) > 0 then
@@ -121,7 +129,12 @@ if [ -n "$transcript_p" ] && [ -f "$transcript_p" ]; then
               end) }
       | select(.d > 0) ] | last
     | if . == null then (if $latest > 0 then "- \($latest)" else empty end) else "\(.d) \(.t)" end
+    ) // "" | ., "T:\($title)"
   ' 2>/dev/null)
+  case "$tr_out" in
+    *"${nl}T:"*) sl_title=${tr_out##*"${nl}T:"}; tr_out=${tr_out%"${nl}T:"*} ;;
+  esac
+  set -- $tr_out
   depth_tok=$1; taken_at=$2
   case "$depth_tok" in ''|*[!0-9]*) depth_tok="" ;; esac
   case "$taken_at" in ''|*[!0-9]*) taken_at="" ;; esac
@@ -490,10 +503,36 @@ iterate_subrepos() {
   done
 }
 
+# --- Extension hook ---
+# An executable ${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-extra runs once per render
+# with the payload on stdin and STATUSLINE_DIR (workspace.current_dir) and
+# STATUSLINE_TITLE (the session's last custom title, may be empty) in its environment.
+# Its stdout is printed after line 1, empty lines dropped. A first line that is exactly
+# "#hide-git" (the first non-empty line, CR stripped) is not printed and switches the git and worktree lines off (none of
+# their git work runs). A hook that fails changes nothing.
+extra_out=""; hide_git=""
+hook="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline-extra"
+if [ -f "$hook" ]; then
+  hook_out=$(printf '%s' "$input" | STATUSLINE_DIR="${cur_dir:-$cwd}" STATUSLINE_TITLE="$sl_title" "$hook" 2>/dev/null) || hook_out=""
+  # The marker is the first non-empty line, a trailing CR stripped from every line.
+  cr=$(printf '\r'); hook_first=1
+  while IFS= read -r hook_l; do
+    hook_l=${hook_l%"$cr"}
+    [ -n "$hook_l" ] || continue
+    if [ -n "$hook_first" ]; then
+      hook_first=""
+      if [ "$hook_l" = "#hide-git" ]; then hide_git=1; continue; fi
+    fi
+    extra_out="${extra_out:+$extra_out$nl}$hook_l"
+  done <<HOOKEOF
+$hook_out
+HOOKEOF
+fi
+
 # Anchored to workspace.project_dir (the session's starting directory), NOT
 # current_dir: a cd into another project or up to ~/Documents/projects would
 # otherwise re-anchor the render and list every repo under that parent.
-if [ -n "$cwd" ] && [ -d "$cwd" ]; then
+if [ -z "$hide_git" ] && [ -n "$cwd" ] && [ -d "$cwd" ]; then
   search="$cwd"
   # Walk to the OUTERMOST *_ws ancestor (don't break), so a nested scratch_ws
   # inside lore_ws still resolves to lore_ws.
@@ -670,13 +709,21 @@ cfg_part="${GRAY}${effort}/${advisor}${RESET}"
 line1="${model_part}${SEP}${ctx_display}${SEP}${pc_display:+${pc_display}${SEP}}${cfg_part}${SEP}${rl}"
 printf "%s\n" "$line1"
 
+# Hook lines (see "Extension hook"), then git. $printed tracks whether a previous
+# line needs a newline before the next one.
+printed=""
+if [ -n "$extra_out" ]; then printf "%s" "$extra_out"; printed=1; fi
+
 # Line 2: git per-repo (only if there's activity)
-[ -n "$git_display" ] && printf "%s" "$git_display"
+if [ -n "$git_display" ]; then
+  [ -n "$printed" ] && printf "\n"
+  printf "%s" "$git_display"; printed=1
+fi
 
 # Line 3: worktrees (omitted entirely when none exist). The separator is only
 # emitted when line 2 actually rendered, else we'd print a blank line.
 if [ -n "$wt_display" ]; then
-  [ -n "$git_display" ] && printf "\n"
+  [ -n "$printed" ] && printf "\n"
   printf "%s" "$wt_display"
 fi
 exit 0

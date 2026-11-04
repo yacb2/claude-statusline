@@ -42,6 +42,18 @@ The script keeps one account-wide cache per config dir (`${CLAUDE_CONFIG_DIR:-~/
 
 Once per weekly cycle the script appends one line to `${CLAUDE_CONFIG_DIR:-~/.claude}/aidex/quota-history.jsonl` (`seen_at`, `resets_at`, `used_percentage`, and `prev_used_percentage`: the closing % of the cycle before, taken from `quota-current.json`, which holds the last % seen). Nothing reads it at render time; it is raw data for looking back at how much of each week was used, which the cache above cannot answer because it keeps only the current window.
 
+## Extension hook
+
+To add lines of your own (or replace the git lines) without forking the script, drop an executable file at `${CLAUDE_CONFIG_DIR:-~/.claude}/statusline-extra`. Each render runs it once, before the git section:
+
+- **stdin**: the original JSON payload Claude Code sent.
+- **environment**: `STATUSLINE_DIR`, the payload's `workspace.current_dir` (`project_dir` when absent); `STATUSLINE_TITLE`, the session's last custom title from the transcript (whitespace collapsed to single spaces, empty when there is none).
+- **stdout**: printed right after line 1, empty lines dropped. It may carry ANSI colours.
+- **`#hide-git`**: when the first non-empty output line (a trailing CR stripped from every line) is exactly this, it is not printed, and the per-repo and worktree lines are neither computed nor printed.
+- **failure**: a missing, non-executable or failing (non-zero exit) hook changes nothing; its output is discarded.
+
+The lookup is per config dir, so two accounts with different `CLAUDE_CONFIG_DIR` can have different hooks (or none). The hook runs in the render's critical path: keep it fast.
+
 ## Install
 
 Requires `jq` and `git` (POSIX `sh`; macOS or Linux).

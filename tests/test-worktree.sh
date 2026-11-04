@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for worktree handling in statusline-command.sh.
 #
 # Self-contained: every fixture is built here and torn down at exit, so the

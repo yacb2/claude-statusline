@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for the git-line ANCHOR in statusline-command.sh.
 #
 # Bug: the anchor was `.workspace.current_dir`, which follows every `cd`. A

@@ -1,4 +1,5 @@
 #!/bin/sh
+unset CLAUDE_CONFIG_DIR   # the suites choose their own config dir; never inherit the caller's
 # Regression tests for the prompt-cache element on line 1.
 #
 # Claude Code >= 2.1.251 hands the status line a `prompt_cache` object computed
